@@ -1191,7 +1191,7 @@
       <div class="quiz-q">
         <div class="today-chip"><span class="hanja">${c.h}</span> ${hunum(c)}</div>
         <div class="prompt">오늘의 한자 '<b>${hunum(c)}</b>'가 <b class="pos">쓰인</b> 어휘는 무엇일까요?</div>
-        <div class="qhint">처음 보는 낱말이에요. 소리가 같아도 뜻이 다를 수 있으니, 음훈으로 뜻을 짐작해 보세요!</div>
+        <div class="qhint">단어의 뜻을 생각해 보며 짐작해 보세요!</div>
       </div>
       <div class="options two">${opts}</div>
       <div id="fb">${answered ? inferFeedback(step) : ''}</div>
