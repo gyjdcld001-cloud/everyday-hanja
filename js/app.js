@@ -1522,7 +1522,6 @@
         <div class="stage-label">${g.name} ${testName(t)} 결과</div>
         ${head}
         <button class="btn block big" id="confirm">확인</button>
-        <button class="btn ghost block" id="fix" style="margin-top:10px">← 답 고치러 돌아가기</button>
       </div>
       ${wrong.length ? `<div class="card"><h3>${t.kind === 'level' ? '공부할 한자' : '틀린 한자'} ${wrong.length}자</h3>
         <ul class="wrong-list">${list}</ul></div>` : ''}`;
@@ -1533,13 +1532,6 @@
       renderTestResult();
     }));
     document.getElementById('confirm').addEventListener('click', () => { finalizeTest(); });
-    document.getElementById('fix').addEventListener('click', () => {
-      t.finished = false;
-      t.i = t.items.length - 1;
-      save();
-      document.body.classList.add('in-lesson');
-      renderTest();
-    });
   }
 
   function passGrade(g) {
