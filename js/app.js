@@ -928,6 +928,11 @@
       match: bindMatch, cloze: bindCloze, check: bindCheck, write: bindWrite, infer: bindInfer, pick: bindPick,
       weekIntro: () => document.getElementById('next').addEventListener('click', nextStep),
       weekSummary: () => document.getElementById('next').addEventListener('click', nextStep),
+      // 이미 '#/extra' 주소에 있으면 주소가 바뀌지 않아 화면이 넘어가지 않으므로 직접 시작합니다.
+      done: () => {
+        const more = document.getElementById('more');
+        if (more) more.addEventListener('click', () => { if (location.hash === '#/extra') route(); else location.hash = '#/extra'; });
+      },
     };
     if (B[step.kind]) B[step.kind](step);
     bindOpen();
@@ -942,7 +947,7 @@
   function renderLearn(step) {
     const c = C(step.idx);
     return `<div class="card lesson-card">${stageHtml('learn')}${charHeadHtml(c)}
-      <p class="center tip">💡 '${hunum(c)}'처럼 <b>뜻</b>과 <b>소리</b>를 함께 읽어 보세요.</p>
+      <p class="center tip">💡 <b>뜻</b>과 <b>소리</b>를 소리 내어 읽어 보세요.</p>
       ${nextBtn('활용 어휘 만나러 가기 →')}</div>`;
   }
 
@@ -1318,7 +1323,7 @@
         <p class="small muted">${g.name} ${g.end - g.start}자 전체로 급수 시험을 봐요. 100점이면 다음 급수로 올라가요.</p>
         <a class="btn block" href="#/test">급수 시험 보러 가기</a></div>`;
     } else if (learnedNew && nextNewIdx() !== null) {
-      action = `<a class="btn ghost block" href="#/extra" style="margin-top:12px">➕ 한 자 더 배우기 (남은 한자 ${queueLeft()}자)</a>`;
+      action = `<button class="btn ghost block" id="more" style="margin-top:12px">➕ 한 자 더 배우기 (남은 한자 ${queueLeft()}자)</button>`;
     }
     const html = `<div class="card celebrate">
       <div class="emoji">🏅</div>
