@@ -555,3 +555,6 @@ ol.plain li { margin: 4px 0; }
 .test-btns { gap: 8px; }
 .test-btns .btn { padding: 10px 8px; font-size: 17px; }
 .test-btns #prev { flex: 0.8; }
+.pos { color: var(--green); text-decoration: underline; text-underline-offset: 4px; }
+.options.two { grid-template-columns: 1fr 1fr; }
+.options.two .big-opt { justify-content: center; min-height: 84px; font-size: 30px; }

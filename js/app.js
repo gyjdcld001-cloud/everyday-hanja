@@ -381,7 +381,7 @@
     same.concat(pool).forEach((x) => { if (opts.length < 4 && !opts.includes(x.mean)) opts.push(x.mean); });
     return { kind: 'pick', type: 'meaning', idx: i, stage, word: w, options: shuffle(opts), answer: w.mean };
   }
-  // 추론하기: 오늘의 한자가 쓰이지 않은 어휘(소리는 같은 글자가 들어 있음) 고르기
+  // 추론하기: 활용 어휘에 없던 새 어휘 가운데 오늘의 한자가 쓰인 어휘 고르기
   // 뜻풀이를 두 글자씩 끊어 비교합니다. '하는', '에서'처럼 흔한 조각은 뜻 비교에서 뺍니다.
   function rawBigrams(s) {
     const out = new Set();
@@ -400,9 +400,19 @@
     const ctx = bigrams(c.words.map((w) => w.mean).join(' ') + ' ' + c.meanings.join(' '));
     // 한글로만 보여 주므로, 같은 읽기의 다른 어휘에 오늘 한자가 쓰였다면 제외합니다. (예: 數 — 산수(山水)는 산수(算數)와 헷갈림)
     const usesToday = (w) => (BY_READ[w.read] || []).some((x) => x.word.includes(c.h));
-    let cands = ALL_WORDS.filter((w) => !usesToday(w) && !own.has(w.read)
-      && [...plainRead(w)].some((ch) => sounds.has(ch)));
-    if (!cands.length) cands = ALL_WORDS.filter((w) => !usesToday(w) && !own.has(w.read) && C(w.owner).gradeIdx <= c.gradeIdx);
+    const [aw, ar, am] = INFER_WORDS[c.h];
+    const answer = { word: aw, read: ar, mean: am };
+    const ok = (w) => !usesToday(w) && !own.has(w.read) && w.read !== answer.read;
+    // 다른 한자의 추론 어휘도 오답 후보로 씁니다. (예: 人 — 인천(仁川))
+    const pool = ALL_WORDS.concat(Object.entries(INFER_WORDS).filter(([h]) => h !== c.h)
+      .map(([h, [word, read, mean]]) => ({ word, read, mean, owner: BY_CHAR[h].idx })));
+    let cands = pool.filter((w) => ok(w) && !w.word.includes(c.h) && [...plainRead(w)].some((ch) => sounds.has(ch)));
+    if (!cands.length && INFER_DISTRACT[c.h]) {
+      const [dw, dr, dm] = INFER_DISTRACT[c.h];
+      const d = { word: dw, read: dr, mean: dm, native: !dw };
+      return { kind: 'infer', idx: i, stage: 'infer', options: shuffle([answer, d]), answer: answer.read, other: d.read, chosen: null };
+    }
+    if (!cands.length) cands = ALL_WORDS.filter((w) => ok(w) && C(w.owner).gradeIdx <= c.gradeIdx);
     // 오늘 어휘들과 뜻이 겹치지 않는(헷갈리지 않는) 어휘를 고릅니다.
     // 어휘의 뜻뿐 아니라, 같은 소리 글자가 쓰인 다른 어휘들의 뜻까지 비교합니다. (예: 敎와 校는 둘 다 '선생님'과 관련 있어 제외)
     const overlap = (text) => { let n = 0; bigrams(text).forEach((b) => { if (ctx.has(b)) n++; }); return n; };
@@ -414,10 +424,8 @@
     }).sort((a, b) => a.n - b.n);
     const best = scored.filter((x) => x.n === scored[0].n);
     const odd = pick(best.length >= 2 ? best : scored.slice(0, 2)).w;
-    return {
-      kind: 'infer', idx: i, stage: 'infer',
-      options: shuffle(shuffle(c.words).slice(0, 3).concat([odd])), odd: odd.read, chosen: null,
-    };
+    // 2지선다: 오늘의 한자가 쓰인 새 어휘(정답) + 소리는 같지만 다른 한자가 쓰인 어휘
+    return { kind: 'infer', idx: i, stage: 'infer', options: shuffle([answer, odd]), answer: answer.read, other: odd.read, chosen: null };
   }
 
   /* ================= 학습 세션 ================= */
@@ -1090,7 +1098,7 @@
     if (!c.sounds.includes(syl)) why.push(`'${w.read}'에서는 '${syl}'(으)로 읽지만 본래 소리는 '${c.sounds[0]}'이에요. (두음 법칙)`);
     return `<div class="feedback no">❌ 정답은 <b>${own.m} ${own.s}</b>(<span class="hj">${c.h}</span>)예요.</div>
       <div class="explain"><div class="why"><b>틀린 까닭</b> ${why.join(' ')}</div>
-      <div class="solve"><b>해설</b> ${breakdown(w)}<br>'${own.m}'이라는 뜻이 어휘의 뜻 '${w.mean}'에 들어 있어요.</div></div>`;
+      <div class="solve"><b>해설</b> ${breakdown(w)}<br>'${w.read}'의 '${targetPos(c, w).syl}'은(는) <span class="hj">${c.h}</span>(${own.m} ${own.s})예요.</div></div>`;
   }
   function bindCheck(step) {
     if (step.graded) { bindNext(); return; }
@@ -1164,53 +1172,54 @@
     });
   }
 
-  // 5. 추론하기 — 오늘의 한자가 쓰이지 않은 어휘 고르기 (보기는 한글만, 바로 채점, 맞아도 해설)
+  // 5. 추론하기 — 처음 보는 어휘 2개 가운데 오늘의 한자가 쓰인 어휘 고르기 (보기는 한글만, 바로 채점, 맞아도 틀려도 해설)
   function renderInfer(step) {
     const c = C(step.idx);
     const answered = step.chosen !== null;
     const opts = step.options.map((w, k) => {
       let cls = '';
-      if (answered && w.read === step.odd) cls = ' correct';
+      if (answered && w.read === step.answer) cls = ' correct';
       else if (answered && w.read === step.chosen) cls = ' wrong';
       return `<button class="opt big-opt${cls}" data-k="${k}" ${answered ? 'disabled' : ''}><span class="opt-n">${k + 1}</span>${w.read}</button>`;
     }).join('');
     return `<div class="card lesson-card">${stageHtml('infer')}
       <div class="quiz-q">
         <div class="today-chip"><span class="hanja">${c.h}</span> ${hunum(c)}</div>
-        <div class="prompt">오늘의 한자 '<b>${hunum(c)}</b>'가 쓰이지 <b class="neg">않은</b> 어휘는 무엇일까요?</div>
-        <div class="qhint">소리가 같아도 뜻이 다를 수 있어요. 낱말의 뜻을 떠올려 보세요!</div>
+        <div class="prompt">오늘의 한자 '<b>${hunum(c)}</b>'가 <b class="pos">쓰인</b> 어휘는 무엇일까요?</div>
+        <div class="qhint">처음 보는 낱말이에요. 소리가 같아도 뜻이 다를 수 있으니, 음훈으로 뜻을 짐작해 보세요!</div>
       </div>
-      <div class="options">${opts}</div>
+      <div class="options two">${opts}</div>
       <div id="fb">${answered ? inferFeedback(step) : ''}</div>
       ${answered ? nextBtn('적용하기 →') : ''}
     </div>`;
   }
   function inferFeedback(step) {
     const c = C(step.idx);
-    const oddW = step.options.find((w) => w.read === step.odd);
+    const ans = step.options.find((w) => w.read === step.answer);
+    const oth = step.options.find((w) => w.read === step.other);
     const sounds = new Set(c.sounds.flatMap((s) => [s, dueum(s)]));
-    const look = wordParts(oddW).find((p) => sounds.has(p.s));
-    const oddWhy = look
-      ? `'${oddW.read}'의 '${look.s}'은(는) <span class="hj">${look.ch}</span>(${look.m} ${look.s})예요. 소리는 같지만 '${hunum(c)}'와 뜻이 달라요.`
-      : `'${oddW.read}'에는 '${hunum(c)}'가 들어 있지 않아요.`;
-    const ok = step.chosen === step.odd;
-    let why = '';
-    if (!ok) {
-      const chosen = step.options.find((w) => w.read === step.chosen);
-      why = `<div class="why"><b>틀린 까닭</b> 고른 '${chosen.read}'에는 오늘의 한자 '${hunum(c)}'가 쓰였어요. ${breakdown(chosen)}</div>`;
-    }
-    const others = step.options.filter((w) => w.read !== step.odd).map((w) => `<li>${breakdown(w)}</li>`).join('');
-    return `<div class="feedback ${ok ? 'ok' : 'no'}">${ok ? '⭕ 정답이에요! 잘 추론했어요.' : `❌ 정답은 '${oddW.read}'예요.`}</div>
+    const own = wordParts(ans).find((p) => p.ch === c.h);
+    const look = oth.native ? null : wordParts(oth).find((p) => sounds.has(p.s));
+    const ok = step.chosen === step.answer;
+    const othBreak = oth.native ? `${oth.read} → <b>${oth.mean}</b>` : breakdown(oth);
+    const ansWhy = `'${ans.read}'의 '${own.s}'은(는) 오늘 배운 <span class="hj">${c.h}</span>(${own.m} ${own.s})예요. 음훈을 떠올리면 '${ans.read}'의 뜻을 짐작할 수 있어요.`;
+    const othWhy = oth.native
+      ? `'${oth.read}'의 '${oth.read[0]}'은(는) 한자가 아니라 우리말(고유어)이에요. 소리만 같아요.`
+      : look
+        ? `'${oth.read}'의 '${look.s}'은(는) <span class="hj">${look.ch}</span>(${look.m} ${look.s})예요. 소리는 같지만 '${hunum(c)}'와 뜻이 달라요.`
+        : `'${oth.read}'에는 '${hunum(c)}'가 쓰이지 않았어요.`;
+    const why = ok ? '' : `<div class="why"><b>틀린 까닭</b> 고른 '${oth.read}'은(는) ${oth.native ? '소리만 같은 우리말이에요' : look ? `소리만 같고 ${look.ch}(${look.m} ${look.s})가 쓰인 어휘예요` : '오늘의 한자가 쓰이지 않은 어휘예요'}. 뜻이 '${oth.mean}'이라서 '${own.m}'과(와) 관계가 없어요.</div>`;
+    return `<div class="feedback ${ok ? 'ok' : 'no'}">${ok ? '⭕ 정답이에요! 음훈으로 뜻을 잘 추론했어요.' : `❌ 정답은 '${ans.read}'예요.`}</div>
       <div class="explain">${why}
-        <div class="solve"><b>해설</b> ${breakdown(oddW)}<br>${oddWhy}</div>
-        <div class="solve"><b>'${hunum(c)}'가 쓰인 어휘</b><ul class="plain-list">${others}</ul></div>
+        <div class="solve"><b>정답 해설</b> ${breakdown(ans)}<br>${ansWhy}</div>
+        <div class="solve"><b>다른 보기</b> ${othBreak}<br>${othWhy}</div>
       </div>`;
   }
   function bindInfer(step) {
     if (step.chosen !== null) { bindNext(); return; }
     $app.querySelectorAll('.big-opt').forEach((b) => b.addEventListener('click', () => {
       step.chosen = step.options[+b.dataset.k].read;
-      const ok = step.chosen === step.odd;
+      const ok = step.chosen === step.answer;
       score(ok, step.idx);
       S.log[session.date] = Object.assign(S.log[session.date] || {}, { infer: ok });
       save();
@@ -1675,7 +1684,7 @@
           <li><b>② 활용 어휘 ①</b> — 한자 아래 음훈을 힌트로 어휘와 뜻을 선으로 연결해요.</li>
           <li><b>③ 활용 어휘 ②</b> — 문장의 빈칸에 알맞은 활용 어휘를 넣어요.</li>
           <li><b>④ 확인하기</b> — 한글 어휘에 쓰인 오늘 한자의 뜻과 음을 써요.</li>
-          <li><b>⑤ 추론하기</b> — 소리는 같지만 오늘의 한자가 쓰이지 않은 어휘를 찾아요.</li>
+          <li><b>⑤ 추론하기</b> — 처음 보는 어휘 2개 가운데 오늘의 한자가 쓰인 어휘를 음훈으로 짐작해 골라요.</li>
           <li><b>⑥ 적용하기</b> — 배운 낱말을 넣어 짧은 글을 지어요.</li>
           <li><b>1일 후 복습</b> — 다음 학습일 아침에 바로 전 한자를 퀴즈로 떠올려요. (금요일 한자는 월요일에)</li>
           <li><b>일주일 복습</b> — 금요일마다 그 주의 한자 5자를 모두 다시 풀어요.</li>
