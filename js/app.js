@@ -210,7 +210,7 @@
   // 어휘 한자 + 각 글자 아래 작은 음훈
   function wordCharsHtml(w, target, showHunum = true) {
     return `<div class="wchars">${wordParts(w).map((p) => `
-      <span class="wc${p.ch === target ? ' on' : ''}"><b class="hanja">${p.ch}</b>${showHunum ? `<small>${p.m} ${p.s}</small>` : ''}</span>`).join('')}</div>`;
+      <span class="wc${p.ch === target ? ' on' : ''}"><b class="hanja">${p.ch}</b>${showHunum ? `<small>${p.m} <strong>${p.s}</strong></small>` : ''}</span>`).join('')}</div>`;
   }
 
 
@@ -331,7 +331,7 @@
   // 한글 어휘 + 각 글자 아래 음훈(한자 없이)
   function hangulPartsHtml(w, target) {
     return `<div class="wchars">${wordParts(w).map((p) => `
-      <span class="wc${p.ch === target ? ' on' : ''}"><b>${p.s}</b><small>${p.m} ${p.s}</small></span>`).join('')}</div>`;
+      <span class="wc${p.ch === target ? ' on' : ''}"><b>${p.s}</b><small>${p.m} <strong>${p.s}</strong></small></span>`).join('')}</div>`;
   }
   // 같은 소리를 가진 한자들(복습 보기용)
   const SOUND_INDEX = {};
@@ -381,7 +381,7 @@
     same.concat(pool).forEach((x) => { if (opts.length < 4 && !opts.includes(x.mean)) opts.push(x.mean); });
     return { kind: 'pick', type: 'meaning', idx: i, stage, word: w, options: shuffle(opts), answer: w.mean };
   }
-  // 어휘 추론: 오늘의 한자가 쓰이지 않은 어휘(소리는 같은 글자가 들어 있음) 고르기
+  // 추론하기: 오늘의 한자가 쓰이지 않은 어휘(소리는 같은 글자가 들어 있음) 고르기
   // 뜻풀이를 두 글자씩 끊어 비교합니다. '하는', '에서'처럼 흔한 조각은 뜻 비교에서 뺍니다.
   function rawBigrams(s) {
     const out = new Set();
@@ -431,8 +431,8 @@
     match: { n: 2, t: '활용 어휘 ①', sub: '뜻 연결하기', e: '🔗', c: 's2' },
     cloze: { n: 3, t: '활용 어휘 ②', sub: '빈칸 채우기', e: '🧩', c: 's3' },
     check: { n: 4, t: '확인하기', e: '✅', c: 's4' },
-    write: { n: 5, t: '적용하기', sub: '짧은 글짓기', e: '✏️', c: 's5' },
-    infer: { n: 6, t: '어휘 추론', e: '🔍', c: 's6' },
+    infer: { n: 5, t: '추론하기', e: '🔍', c: 's6' },
+    write: { n: 6, t: '적용하기', sub: '짧은 글짓기', e: '✏️', c: 's5' },
     week: { n: 0, t: '일주일 복습', e: '⭐', c: 'week' },
     free: { n: 0, t: '자유 복습', e: '🎲', c: 'review' },
   };
@@ -472,8 +472,8 @@
       { kind: 'match', idx: i, stage: 'match', order: shuffle(c.words.map((_, k) => k)), done: [], selL: null, selR: null },
       { kind: 'cloze', idx: i, stage: 'cloze', order, filled: [], cur: order[0] },
       { kind: 'check', idx: i, stage: 'check', word: pick(c.words), m: '', s: '', graded: false },
-      { kind: 'write', idx: i, stage: 'write', text: '' },
       inferQuestion(i),
+      { kind: 'write', idx: i, stage: 'write', text: '' },
     ];
   }
   // '한 자 더 배우기': 복습 없이 새 한자 1~6단계만
@@ -643,7 +643,7 @@
       <div class="card hero login">
         <div class="login-mark">漢</div>
         <h1>매일 한자</h1>
-        <p class="muted">평일 아침 5분, 하루 한 자씩<br>뜻과 음을 익혀요!</p>
+        <p class="slogan">매일 5분,<br><b>한자를 알면 어휘가 보인다</b></p>
         <div class="seg"><button class="${isNew ? '' : 'on'}" data-mode="in">입장하기</button><button class="${isNew ? 'on' : ''}" data-mode="new">처음 왔어요</button></div>
         <form id="login" autocomplete="off">
           <label for="name">이름(아이디)</label>
@@ -700,7 +700,8 @@
   function phaseCard(t) {
     const g = curGrade();
     const total = g.end - g.start;
-    const test = S.test && !S.test.finished ? S.test : null;
+    const test = S.test || null;
+    const contLabel = (x) => (x.finished ? '결과 확인하기' : `이어서 하기 (${x.i} / ${x.items.length})`);
     if (S.phase === 'done') {
       return `<div class="card hero">
         <div class="big-hanja">🏆</div>
@@ -715,7 +716,7 @@
         <h2>${g.name} 레벨테스트</h2>
         <p>한자와 활용 어휘 2개를 보고 <b>뜻과 음</b>을 써요.<br>이미 아는 한자는 건너뛰고, <b>틀린 한자만</b> 공부해요!</p>
         <p class="small muted">${total}문항 · 모르는 한자는 '몰라요'를 눌러 빨리 넘어가요.</p>
-        <a class="btn block big" href="#/level">${cont ? `이어서 하기 (${test.i} / ${test.items.length})` : '레벨테스트 시작!'}</a></div>`;
+        <a class="btn block big" href="#/level">${cont ? contLabel(test) : '레벨테스트 시작!'}</a></div>`;
     }
     if (S.phase === 'exam') {
       const cont = test && test.kind === 'exam';
@@ -725,7 +726,7 @@
         <h2>${g.name} 급수 시험 볼 차례!</h2>
         <p>${g.name} ${total}자를 모두 봐요. <b>100점</b>이면 다음 급수로 올라가요.</p>
         ${rec ? `<p class="small muted">지난 시험 ${rec.last}점 · ${rec.attempts}번째 도전</p>` : ''}
-        <a class="btn block big" href="#/test">${cont ? `이어서 하기 (${test.i} / ${test.items.length})` : '급수 시험 시작!'}</a>
+        <a class="btn block big" href="#/test">${cont ? contLabel(test) : '급수 시험 시작!'}</a>
         <a class="btn soft block" href="#/exam" style="margin-top:10px">📖 ${g.name} 전체 복습 먼저 하기</a></div>`;
     }
     if (S.phase === 'relearn') {
@@ -772,7 +773,7 @@
     const started = !!entry;
     const rows = [];
     if (plan.reviews.length) rows.push(['🔁', '', '어제 배운 한자 복습']);
-    ['learn', 'match', 'cloze', 'check', 'write', 'infer'].forEach((k) => {
+    ['learn', 'match', 'cloze', 'check', 'infer', 'write'].forEach((k) => {
       const st = STAGES[k];
       rows.push([st.e, st.n, `${st.t}${st.sub ? ` <span class="muted">· ${st.sub}</span>` : ''}`, st.c]);
     });
@@ -891,7 +892,7 @@
     if (!['lesson', 'extra'].includes(session.type) || session.plan.newIdx === null || session.plan.newIdx === undefined) return '';
     const cur = STAGES[step.stage] ? STAGES[step.stage].n : 0;
     const passed = step.kind === 'done' || step.stage === 'week';
-    return `<div class="tracker">${['learn', 'match', 'cloze', 'check', 'write', 'infer'].map((k) => {
+    return `<div class="tracker">${['learn', 'match', 'cloze', 'check', 'infer', 'write'].map((k) => {
       const s = STAGES[k];
       const cls = passed || (cur && s.n < cur) ? 'done' : s.n === cur ? 'now' : '';
       return `<span class="tk tk-${s.c} ${cls}" title="${s.t}">${cls === 'done' ? '✓' : s.n}</span>`;
@@ -1025,9 +1026,9 @@
         <span>${esc(before)}<span class="blank">${filled ? c.words[k].read : cur ? '?' : '&nbsp;&nbsp;&nbsp;'}</span>${esc(after)}</span></li>`;
     }).join('');
     return `<div class="card lesson-card">${stageHtml('cloze')}
-      <p class="guide">${all ? '🎉 빈칸을 모두 채웠어요!' : '빈칸에 들어갈 알맞은 <b>활용 어휘</b>를 아래에서 골라요.'}</p>
+      <p class="guide">${all ? '🎉 빈칸을 모두 채웠어요!' : '빈칸에 들어갈 알맞은 <b>활용 어휘</b>를 위의 보기에서 골라요.'}</p>
+      <div class="bank-wrap"><div class="bank-title">활용 어휘 (보기)</div><div class="chips">${bank}</div></div>
       <ol class="cloze">${items}</ol>
-      <div class="bank-wrap"><div class="bank-title">활용 어휘</div><div class="chips">${bank}</div></div>
       <div id="fb"></div>
       ${all ? nextBtn('확인하기 →') : ''}
     </div>`;
@@ -1073,7 +1074,7 @@
           <div><label for="s">음 (소리)</label><input id="s" lang="ko" value="${esc(step.s)}" ${step.graded ? 'readonly' : ''}></div>
         </div>
         <div id="fb">${step.graded ? checkFeedback(step) : ''}</div>
-        ${step.graded ? nextBtn('적용하기 →') : '<button class="btn block big" id="go">정답 확인</button>'}
+        ${step.graded ? nextBtn('추론하기 →') : '<button class="btn block big" id="go">정답 확인</button>'}
       </form>
     </div>`;
   }
@@ -1163,7 +1164,7 @@
     });
   }
 
-  // 6. 어휘 추론 — 오늘의 한자가 쓰이지 않은 어휘 고르기 (보기는 한글만, 바로 채점, 맞아도 해설)
+  // 5. 추론하기 — 오늘의 한자가 쓰이지 않은 어휘 고르기 (보기는 한글만, 바로 채점, 맞아도 해설)
   function renderInfer(step) {
     const c = C(step.idx);
     const answered = step.chosen !== null;
@@ -1181,7 +1182,7 @@
       </div>
       <div class="options">${opts}</div>
       <div id="fb">${answered ? inferFeedback(step) : ''}</div>
-      ${answered ? nextBtn(session.plan && session.plan.week.length ? '일주일 복습 →' : '마치기 →') : ''}
+      ${answered ? nextBtn('적용하기 →') : ''}
     </div>`;
   }
   function inferFeedback(step) {
@@ -1430,7 +1431,7 @@
     const words = it.words.map((k) => {
       const w = c.words[k];
       return `<span class="tw"><span class="hanja">${hl(w.word, c.h)}</span><small>(${w.read})</small></span>`;
-    }).join('<span class="tw-dot">·</span>');
+    }).join('');
     $app.innerHTML = `
       <div class="lesson-head">
         <button class="close-x" id="quit" aria-label="나중에 이어서 하기">✕</button>
@@ -1446,11 +1447,13 @@
         </div>
         <form id="f" autocomplete="off">
           <div class="exam-inputs">
-            <div><label for="m">뜻 (훈)</label><input id="m" lang="ko" enterkeyhint="next"></div>
-            <div><label for="s">음 (소리)</label><input id="s" lang="ko" enterkeyhint="done"></div>
+            <div><label for="m">뜻 (훈)</label><input id="m" lang="ko" enterkeyhint="next" value="${esc(it.m)}"></div>
+            <div><label for="s">음 (소리)</label><input id="s" lang="ko" enterkeyhint="done" value="${esc(it.s)}"></div>
           </div>
+          ${it.skip ? '<p class="small muted center" style="margin:8px 0 0">앞에서 \'몰라요\'로 넘긴 문제예요. 답을 쓰면 고칠 수 있어요.</p>' : ''}
           <div id="fb"></div>
-          <div class="btn-row">
+          <div class="btn-row test-btns">
+            <button type="button" class="btn ghost" id="prev" ${t.i === 0 ? 'disabled' : ''}>← 이전</button>
             <button type="button" class="btn soft" id="skip">🤔 몰라요</button>
             <button class="btn" id="go">다음 →</button>
           </div>
@@ -1462,6 +1465,15 @@
     m.focus();
     m.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); s.focus(); } });
     const advance = () => { t.i++; save(); renderTest(); window.scrollTo(0, 0); };
+    document.getElementById('prev').addEventListener('click', () => {
+      if (t.i === 0) return;
+      // 지금 쓴 답은 남겨 두고 이전 문제로 돌아가 고칠 수 있어요.
+      if (m.value.trim() || s.value.trim()) Object.assign(it, { m: m.value.trim(), s: s.value.trim(), skip: false });
+      t.i--;
+      save();
+      renderTest();
+      window.scrollTo(0, 0);
+    });
     document.getElementById('quit').addEventListener('click', () => { location.hash = '#/'; });
     document.getElementById('skip').addEventListener('click', () => {
       Object.assign(it, { m: '', s: '', skip: true });
@@ -1510,6 +1522,7 @@
         <div class="stage-label">${g.name} ${testName(t)} 결과</div>
         ${head}
         <button class="btn block big" id="confirm">확인</button>
+        <button class="btn ghost block" id="fix" style="margin-top:10px">← 답 고치러 돌아가기</button>
       </div>
       ${wrong.length ? `<div class="card"><h3>${t.kind === 'level' ? '공부할 한자' : '틀린 한자'} ${wrong.length}자</h3>
         <ul class="wrong-list">${list}</ul></div>` : ''}`;
@@ -1520,6 +1533,13 @@
       renderTestResult();
     }));
     document.getElementById('confirm').addEventListener('click', () => { finalizeTest(); });
+    document.getElementById('fix').addEventListener('click', () => {
+      t.finished = false;
+      t.i = t.items.length - 1;
+      save();
+      document.body.classList.add('in-lesson');
+      renderTest();
+    });
   }
 
   function passGrade(g) {
@@ -1663,8 +1683,8 @@
           <li><b>② 활용 어휘 ①</b> — 한자 아래 음훈을 힌트로 어휘와 뜻을 선으로 연결해요.</li>
           <li><b>③ 활용 어휘 ②</b> — 문장의 빈칸에 알맞은 활용 어휘를 넣어요.</li>
           <li><b>④ 확인하기</b> — 한글 어휘에 쓰인 오늘 한자의 뜻과 음을 써요.</li>
-          <li><b>⑤ 적용하기</b> — 배운 낱말을 넣어 짧은 글을 지어요.</li>
-          <li><b>⑥ 어휘 추론</b> — 소리는 같지만 오늘의 한자가 쓰이지 않은 어휘를 찾아요.</li>
+          <li><b>⑤ 추론하기</b> — 소리는 같지만 오늘의 한자가 쓰이지 않은 어휘를 찾아요.</li>
+          <li><b>⑥ 적용하기</b> — 배운 낱말을 넣어 짧은 글을 지어요.</li>
           <li><b>1일 후 복습</b> — 다음 학습일 아침에 바로 전 한자를 퀴즈로 떠올려요. (금요일 한자는 월요일에)</li>
           <li><b>일주일 복습</b> — 금요일마다 그 주의 한자 5자를 모두 다시 풀어요.</li>
           <li><b>틀린 한자</b> — 틀리면 '다시 볼 한자'로 모아 매일 복습에 최대 ${MAX_EXTRA_REVIEW}자씩 다시 나와요.</li>
