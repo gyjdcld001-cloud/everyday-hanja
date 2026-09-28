@@ -16,10 +16,10 @@
 
   const USERS_KEY = 'everyday-hanja:users';
   const CURRENT_KEY = 'everyday-hanja:current';
-  const LEGACY_KEY = 'everyday-hanja:v1';
+  const PW_KEY = 'everyday-hanja:pw';
+  const TEACHER_KEY = 'everyday-hanja:teacher';
   const stateKey = (name) => `everyday-hanja:v2:${name}`;
   const DAY = ['일', '월', '화', '수', '목', '금', '토'];
-  const PASS_SCORE = 70; // 한자능력검정시험 합격 기준(70%)과 같게
   const MAX_EXTRA_REVIEW = 2; // 매일 복습에 더하는 '틀린 한자' 최대 개수
 
   const $app = document.getElementById('app');
@@ -60,16 +60,23 @@
 
   function blankState() {
     return {
-      pointer: 0,      // 다음에 배울 한자를 찾기 시작하는 위치
+      // 진행 단계: level(레벨테스트) → study(틀린 한자 학습) → exam(급수 시험) → relearn(틀린 한자 다시 보기) → exam …
+      phase: 'level',
+      gradeIdx: 0,     // 지금 공부하는 급수
+      queue: [],       // 이번 급수에서 배울 한자(레벨테스트에서 틀린 한자)
+      relearn: [],     // 급수 시험에서 틀려 다시 볼 한자
+      test: null,      // 진행 중인 레벨테스트·급수 시험
+      known: {},       // idx -> 레벨테스트에서 이미 알았던 날짜
+      passed: {},      // 급수 id -> 통과한 날짜
+      levels: {},      // 급수 id -> { date, known, total }
       learned: {},     // idx -> 배운 날짜
       order: [],       // 배운 순서
-      log: {},         // 날짜 -> { newIdx, reviews, week, done, quiz }
+      log: {},         // 날짜 -> { newIdx, reviews, week, done, quiz, extra }
       missed: [],      // 틀린 한자(다음 복습에 다시 나옴)
       weekly: {},      // 월요일 날짜 -> 주간 복습 완료
-      exams: {},       // 급수 id -> { best, last, passed, date }
+      exams: {},       // 급수 id -> { best, last, attempts, date }
       activity: [],    // 학습 활동 누적 기록
       writings: [],    // 짧은 글짓기 { date, idx, text }
-      unlockAll: false,
     };
   }
   function users() {
@@ -78,41 +85,75 @@
   function loadState(name) {
     try {
       const raw = lsGet(stateKey(name));
-      if (raw) return Object.assign(blankState(), JSON.parse(raw));
+      if (raw) {
+        const st = Object.assign(blankState(), JSON.parse(raw));
+        if (!JSON.parse(raw).phase) Object.assign(st, { phase: 'level', gradeIdx: 0, queue: [] }); // 예전 기록은 레벨테스트부터
+        return st;
+      }
     } catch (e) { /* 새로 시작 */ }
     return blankState();
   }
+
+  // 비밀번호: 서버가 없으므로 이 기기 안에서 친구 기록에 들어가지 못하게 막는 용도입니다.
+  function pwHash(name, pw) {
+    const str = `everyday-hanja|${name}|${pw}`;
+    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+  }
+  function passwords() {
+    try { return JSON.parse(lsGet(PW_KEY)) || {}; } catch (e) { return {}; }
+  }
+  function setPassword(name, pw) {
+    const all = passwords();
+    all[name] = pwHash(name, pw);
+    lsSet(PW_KEY, JSON.stringify(all));
+  }
+  const hasPassword = (name) => !!passwords()[name];
+  const checkPassword = (name, pw) => passwords()[name] === pwHash(name, pw);
+  const teacherSet = () => !!lsGet(TEACHER_KEY);
+  const checkTeacher = (pw) => lsGet(TEACHER_KEY) === pwHash('__teacher__', pw);
+  const setTeacher = (pw) => lsSet(TEACHER_KEY, pwHash('__teacher__', pw));
+
   let user = lsGet(CURRENT_KEY);
-  if (user && !users().includes(user)) user = null;
+  if (user && (!users().includes(user) || !hasPassword(user))) user = null;
   let S = user ? loadState(user) : blankState();
   function save() {
     if (user) lsSet(stateKey(user), JSON.stringify(S));
   }
-  function login(name) {
+  function addUser(name) {
     const list = users();
     if (!list.includes(name)) {
       list.push(name);
       lsSet(USERS_KEY, JSON.stringify(list));
-      // 이름 기능이 생기기 전의 기록이 있으면 첫 학생에게 옮겨 줍니다.
-      const legacy = lsGet(LEGACY_KEY);
-      if (legacy && list.length === 1) {
-        lsSet(stateKey(name), legacy);
-        lsDel(LEGACY_KEY);
-      }
     }
+  }
+  function removeUser(name) {
+    lsSet(USERS_KEY, JSON.stringify(users().filter((n) => n !== name)));
+    const all = passwords();
+    delete all[name];
+    lsSet(PW_KEY, JSON.stringify(all));
+    lsDel(stateKey(name));
+  }
+  function login(name) {
     user = name;
     lsSet(CURRENT_KEY, name);
     S = loadState(name);
     session = null;
-    exam = null;
     listGrade = null;
+    teacherOk = false;
   }
   function logout() {
     user = null;
     lsDel(CURRENT_KEY);
     S = blankState();
     session = null;
-    exam = null;
   }
   function logActivity(a) {
     S.activity.push(Object.assign({ date: fmt(today()) }, a));
@@ -173,10 +214,20 @@
   }
 
 
+  // 다음에 배울 한자: 이번 급수 레벨테스트에서 틀린 한자 가운데 아직 배우지 않은 것
   function nextNewIdx() {
-    for (let i = S.pointer; i < HANJA.length; i++) if (!S.learned[i]) return i;
-    for (let i = 0; i < HANJA.length; i++) if (!S.learned[i]) return i;
-    return null;
+    if (S.phase !== 'study') return null;
+    const i = S.queue.find((x) => !S.learned[x]);
+    return i === undefined ? null : i;
+  }
+  const curGrade = () => GRADES[Math.min(S.gradeIdx, GRADES.length - 1)];
+  const queueLeft = () => S.queue.filter((x) => !S.learned[x]).length;
+  // 틀린 한자를 모두 배우면 급수 시험 단계로 넘어갑니다.
+  function syncPhase() {
+    if (S.phase === 'study' && !queueLeft() && !(session && session.type !== 'review')) {
+      S.phase = 'exam';
+      save();
+    }
   }
   function lastLearnedBefore(ds) {
     for (let k = S.order.length - 1; k >= 0; k--) {
@@ -193,13 +244,7 @@
     const days = weekDates(d);
     return S.order.filter((i) => S.learned[i] >= days[0] && S.learned[i] <= days[4]);
   }
-  function gradeLearnedCount(g, st = S) {
-    let n = 0;
-    for (let i = g.start; i < g.end; i++) if (st.learned[i]) n++;
-    return n;
-  }
-  const gradeComplete = (g) => gradeLearnedCount(g) === g.end - g.start;
-  const examOpen = (g) => S.unlockAll || gradeComplete(g);
+
 
   function streak(st = S) {
     let d = today();
@@ -419,6 +464,37 @@
     return { newIdx, reviews, week, done: false };
   }
 
+  function newCharSteps(i) {
+    const c = C(i);
+    const order = shuffle(c.words.map((_, k) => k));
+    return [
+      { kind: 'learn', idx: i, stage: 'learn' },
+      { kind: 'match', idx: i, stage: 'match', order: shuffle(c.words.map((_, k) => k)), done: [], selL: null, selR: null },
+      { kind: 'cloze', idx: i, stage: 'cloze', order, filled: [], cur: order[0] },
+      { kind: 'check', idx: i, stage: 'check', word: pick(c.words), m: '', s: '', graded: false },
+      { kind: 'write', idx: i, stage: 'write', text: '' },
+      inferQuestion(i),
+    ];
+  }
+  // '한 자 더 배우기': 복습 없이 새 한자 1~6단계만
+  function buildExtra() {
+    const i = nextNewIdx();
+    const plan = { newIdx: i, reviews: [], week: [] };
+    return { type: 'extra', plan, date: fmt(today()), steps: newCharSteps(i).concat([{ kind: 'done' }]), i: 0, correct: 0, total: 0, started: Date.now() };
+  }
+  // 급수 시험에서 틀린 한자 짧게 다시 보기: 오늘의 한자 + 뜻 연결 + 확인하기
+  function buildRelearn() {
+    const steps = [];
+    S.relearn.forEach((i) => {
+      const c = C(i);
+      steps.push({ kind: 'learn', idx: i, stage: 'learn' });
+      steps.push({ kind: 'match', idx: i, stage: 'match', order: shuffle(c.words.map((_, k) => k)), done: [], selL: null, selR: null });
+      steps.push({ kind: 'check', idx: i, stage: 'check', word: pick(c.words), m: '', s: '', graded: false });
+    });
+    steps.push({ kind: 'done' });
+    return { type: 'relearn', plan: { newIdx: null, reviews: [], week: [] }, date: fmt(today()), steps, i: 0, correct: 0, total: 0, started: Date.now() };
+  }
+
   function buildLesson() {
     const plan = planToday();
     const steps = [];
@@ -427,17 +503,7 @@
       steps.push(soundQuestion(i, stage));
       if (k === 0) steps.push(meaningQuestion(i, stage));
     });
-    if (plan.newIdx !== null) {
-      const i = plan.newIdx;
-      const c = C(i);
-      steps.push({ kind: 'learn', idx: i, stage: 'learn' });
-      steps.push({ kind: 'match', idx: i, stage: 'match', order: shuffle(c.words.map((_, k) => k)), done: [], selL: null, selR: null });
-      const order = shuffle(c.words.map((_, k) => k));
-      steps.push({ kind: 'cloze', idx: i, stage: 'cloze', order, filled: [], cur: order[0] });
-      steps.push({ kind: 'check', idx: i, stage: 'check', word: pick(c.words), m: '', s: '', graded: false });
-      steps.push({ kind: 'write', idx: i, stage: 'write', text: '' });
-      steps.push(inferQuestion(i));
-    }
+    if (plan.newIdx !== null && plan.newIdx !== undefined) steps.push(...newCharSteps(plan.newIdx));
     if (plan.week.length) {
       steps.push({ kind: 'weekIntro', list: plan.week, stage: 'week' });
       plan.week.filter((i) => i !== plan.newIdx).forEach((i) => steps.push(soundQuestion(i, 'week')));
@@ -470,13 +536,19 @@
   }
 
   function commitLearn(i) {
+    if (session.type === 'relearn') return;
     const ds = session.date;
     if (!S.learned[i]) {
       S.learned[i] = ds;
       S.order.push(i);
     }
-    if (i >= S.pointer) S.pointer = i + 1;
-    S.log[ds] = Object.assign({}, session.plan, S.log[ds] || {}, { done: false });
+    if (session.type === 'extra') {
+      const e = S.log[ds] || { done: true };
+      e.extra = (e.extra || []).filter((x) => x !== i).concat([i]);
+      S.log[ds] = e;
+    } else {
+      S.log[ds] = Object.assign({}, session.plan, S.log[ds] || {}, { done: false });
+    }
     save();
   }
 
@@ -489,6 +561,12 @@
       S.log[session.date] = e;
       if (session.plan.week.length) S.weekly[fmt(mondayOf(parseDate(session.date)))] = true;
       logActivity({ type: 'lesson', idx: session.plan.newIdx, week: session.plan.week.length > 0, ...quiz });
+    } else if (session.type === 'extra') {
+      logActivity({ type: 'lesson', idx: session.plan.newIdx, extra: true, ...quiz });
+    } else if (session.type === 'relearn') {
+      logActivity({ type: 'relearn', list: S.relearn.slice(), ...quiz });
+      S.relearn = [];
+      S.phase = 'exam';
     } else if (session.type === 'weekly') {
       S.weekly[session.week] = true;
       logActivity({ type: 'weekly', ...quiz });
@@ -556,133 +634,193 @@
   }
 
   /* ================= 화면: 입장 ================= */
+  let loginMode = 'in';
   function renderLogin() {
     document.body.classList.add('logged-out');
     const list = users();
+    const isNew = loginMode === 'new';
     $app.innerHTML = `
       <div class="card hero login">
         <div class="login-mark">漢</div>
         <h1>매일 한자</h1>
         <p class="muted">평일 아침 5분, 하루 한 자씩<br>뜻과 음을 익혀요!</p>
+        <div class="seg"><button class="${isNew ? '' : 'on'}" data-mode="in">입장하기</button><button class="${isNew ? 'on' : ''}" data-mode="new">처음 왔어요</button></div>
         <form id="login" autocomplete="off">
-          <label for="name">내 이름(아이디)</label>
+          <label for="name">이름(아이디)</label>
           <input id="name" class="text-input" maxlength="20" placeholder="예) 3학년 2반 김하늘" required>
-          <button class="btn block">입장하기 🚀</button>
+          <label for="pw">비밀번호${isNew ? ' 만들기 (4글자 이상)' : ''}</label>
+          <input id="pw" type="password" class="text-input" maxlength="30" required autocomplete="off">
+          ${isNew ? `<label for="pw2">비밀번호 한 번 더</label>
+          <input id="pw2" type="password" class="text-input" maxlength="30" required autocomplete="off">` : ''}
+          <div id="fb"></div>
+          <button class="btn block">${isNew ? '만들고 시작하기 🚀' : '입장하기 🚀'}</button>
         </form>
       </div>
-      ${list.length ? `<div class="card">
+      ${list.length && !isNew ? `<div class="card">
         <h3>이 기기에서 공부한 친구들</h3>
-        <p class="small muted">내 이름을 누르면 이어서 공부할 수 있어요.</p>
+        <p class="small muted">내 이름을 누르고 비밀번호를 넣으면 이어서 공부할 수 있어요.</p>
         <div class="name-list">${list.map((n) => `<button class="btn soft" data-name="${esc(n)}">${esc(n)}</button>`).join('')}</div>
       </div>` : ''}
-      <p class="small muted center">학습 기록은 이 기기(브라우저)에 이름별로 저장돼요.</p>`;
-    const enter = (n) => { login(n); location.hash = '#/'; route(); };
+      <p class="small muted center">학습 기록은 이 기기(브라우저)에 이름별로 저장돼요.<br>
+        비밀번호를 잊었다면 선생님께 말씀드리세요. · <a href="#/teacher">선생님 메뉴</a></p>`;
+    const fb = (t) => { document.getElementById('fb').innerHTML = `<div class="feedback no">${t}</div>`; };
+    const nameEl = document.getElementById('name');
+    const pwEl = document.getElementById('pw');
+    $app.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => { loginMode = b.dataset.mode; renderLogin(); }));
+    $app.querySelectorAll('[data-name]').forEach((b) => b.addEventListener('click', () => { nameEl.value = b.dataset.name; pwEl.focus(); }));
     document.getElementById('login').addEventListener('submit', (e) => {
       e.preventDefault();
-      const n = document.getElementById('name').value.trim().replace(/\s+/g, ' ');
-      if (n) enter(n);
+      const n = nameEl.value.trim().replace(/\s+/g, ' ');
+      const pw = pwEl.value;
+      if (!n) return;
+      if (isNew) {
+        if (users().includes(n)) return fb('이미 있는 이름이에요. 다른 이름을 쓰거나 \'입장하기\'를 눌러 주세요.');
+        if (pw.length < 4) return fb('비밀번호는 4글자 이상으로 만들어요.');
+        if (pw !== document.getElementById('pw2').value) return fb('두 비밀번호가 달라요. 다시 확인해 주세요.');
+        addUser(n);
+        setPassword(n, pw);
+      } else {
+        if (!users().includes(n)) return fb('처음 보는 이름이에요. 처음이라면 \'처음 왔어요\'를 눌러 주세요.');
+        if (!hasPassword(n)) {
+          // 비밀번호 기능 이전에 만든 이름: 이번에 쓴 비밀번호로 정해요.
+          if (pw.length < 4) return fb('비밀번호를 새로 정해요. 4글자 이상으로 써 주세요.');
+          setPassword(n, pw);
+        } else if (!checkPassword(n, pw)) {
+          return fb('비밀번호가 맞지 않아요.');
+        }
+      }
+      loginMode = 'in';
+      login(n);
+      location.hash = '#/';
+      route();
     });
-    $app.querySelectorAll('[data-name]').forEach((b) => b.addEventListener('click', () => enter(b.dataset.name)));
   }
 
   /* ================= 화면: 홈 ================= */
-  function renderHome() {
-    setTab('home');
-    const t = today();
+  function phaseCard(t) {
+    const g = curGrade();
+    const total = g.end - g.start;
+    const test = S.test && !S.test.finished ? S.test : null;
+    if (S.phase === 'done') {
+      return `<div class="card hero">
+        <div class="big-hanja">🏆</div>
+        <h2>준비된 모든 급수를 통과했어요!</h2>
+        <p class="muted">${GRADES.map((x) => x.name).join(' · ')} 완전 학습 완료! 새 급수가 준비되면 이어서 공부해요.</p>
+        <a class="btn soft block" href="#/review">🎲 자유 복습</a></div>`;
+    }
+    if (S.phase === 'level') {
+      const cont = test && test.kind === 'level';
+      return `<div class="card hero phase-level">
+        <div class="phase-ico">🧪</div>
+        <h2>${g.name} 레벨테스트</h2>
+        <p>한자와 활용 어휘 2개를 보고 <b>뜻과 음</b>을 써요.<br>이미 아는 한자는 건너뛰고, <b>틀린 한자만</b> 공부해요!</p>
+        <p class="small muted">${total}문항 · 모르는 한자는 '몰라요'를 눌러 빨리 넘어가요.</p>
+        <a class="btn block big" href="#/level">${cont ? `이어서 하기 (${test.i} / ${test.items.length})` : '레벨테스트 시작!'}</a></div>`;
+    }
+    if (S.phase === 'exam') {
+      const cont = test && test.kind === 'exam';
+      const rec = S.exams[g.id];
+      return `<div class="card hero phase-exam">
+        <div class="phase-ico">🏆</div>
+        <h2>${g.name} 급수 시험 볼 차례!</h2>
+        <p>${g.name} ${total}자를 모두 봐요. <b>100점</b>이면 다음 급수로 올라가요.</p>
+        ${rec ? `<p class="small muted">지난 시험 ${rec.last}점 · ${rec.attempts}번째 도전</p>` : ''}
+        <a class="btn block big" href="#/test">${cont ? `이어서 하기 (${test.i} / ${test.items.length})` : '급수 시험 시작!'}</a>
+        <a class="btn soft block" href="#/exam" style="margin-top:10px">📖 ${g.name} 전체 복습 먼저 하기</a></div>`;
+    }
+    if (S.phase === 'relearn') {
+      return `<div class="card hero phase-relearn">
+        <div class="phase-ico">🔁</div>
+        <h2>틀린 한자 다시 보기</h2>
+        <p>급수 시험에서 틀린 <b>${S.relearn.length}자</b>를 다시 익히고, ${g.name} 급수 시험을 다시 봐요.</p>
+        <div class="wk-list">${S.relearn.map((i) => `<span class="wk-char">${C(i).h}<small>${hunum(C(i))}</small></span>`).join('')}</div>
+        <a class="btn block big" href="#/relearn">다시 보기 시작!</a></div>`;
+    }
+    // study
     const ds = fmt(t);
     const entry = S.log[ds];
-    const learnedN = S.order.length;
-    const next = nextNewIdx();
-    let main = '';
-
-    if (!learnedN && !entry) {
-      main += `
-      <div class="card welcome">
-        <h2>반가워요, ${esc(user)}! 👋</h2>
-        <p>평일 아침 <b>5분</b>, 하루에 한자 <b>한 자</b>씩 뜻과 음을 익혀요.
-        글자 모양은 외우지 않아도 돼요. 음훈으로 낱말의 뜻을 짐작하는 힘을 길러요!</p>
-        <p class="small muted">이미 아는 급수가 있다면 <a href="#/settings">설정</a>에서 시작 급수를 바꿀 수 있어요.</p>
-      </div>`;
-    }
-
-    if (isWeekday(t)) {
-      if (entry && entry.done) {
-        const c = entry.newIdx !== null && entry.newIdx !== undefined ? C(entry.newIdx) : null;
-        main += `
-        <div class="card hero">
-          <div class="dayname">${DAY[t.getDay()]}요일 학습 완료! 🎉</div>
-          ${c ? `<div class="big-hanja">${c.h}</div><div class="hunum-read">${hunum(c)}</div>` : ''}
-          <p class="muted">${t.getDay() === 5 ? '한 주 동안 수고했어요! 주말엔 푹 쉬어요.' : '잘했어요! 내일 아침에 복습으로 다시 만나요.'}</p>
-          <div class="btn-row">
-            ${c ? `<button class="btn ghost" data-open="${c.idx}">다시 보기</button>` : ''}
-            <a class="btn soft" href="#/review">자유 복습</a>
-          </div>
-        </div>`;
-      } else if (next === null && !(entry && entry.newIdx !== null && entry.newIdx !== undefined)) {
-        main += `
-        <div class="card hero">
-          <div class="big-hanja">🎉</div>
-          <h2>준비된 한자를 모두 배웠어요!</h2>
-          <p class="muted">급수 시험으로 실력을 확인하거나 자유 복습을 해 보세요.</p>
-          <div class="btn-row"><a class="btn" href="#/exam">급수 시험</a><a class="btn soft" href="#/review">자유 복습</a></div>
-        </div>`;
-      } else {
-        const plan = planToday();
-        const c = C(plan.newIdx);
-        const started = !!entry;
-        const rows = [];
-        if (plan.reviews.length) rows.push(['🔁', '', `어제 배운 한자 복습`]);
-        ['learn', 'match', 'cloze', 'check', 'write', 'infer'].forEach((k) => {
-          const s = STAGES[k];
-          rows.push([s.e, s.n, `${s.t}${s.sub ? ` <span class="muted">· ${s.sub}</span>` : ''}`, s.c]);
-        });
-        if (plan.week.length) rows.push(['⭐', '', `일주일 복습 · 이번 주 ${plan.week.length}자`, 'week']);
-        main += `
-        <div class="card hero today-card">
-          <div class="dayname">${DAY[t.getDay()]}요일 아침 · ${c.gradeName} ${c.idx - gradeOf(c).start + 1}번째 한자</div>
-          <div class="big-hanja mystery">${started ? c.h : '?'}</div>
-          <p class="muted">${started ? '하던 학습을 이어서 해요.' : '오늘은 어떤 한자를 만날까요?'}</p>
-          <ol class="steps">${rows.map(([e, n, txt, cls]) => `<li class="${cls ? `st-${cls}` : ''}"><span class="num">${n || e}</span><span>${txt}</span></li>`).join('')}</ol>
-          <a class="btn block big" href="#/lesson">${started ? '이어서 하기' : '오늘의 학습 시작!'} · 약 5분</a>
-        </div>`;
-      }
-    } else {
+    const left = queueLeft();
+    const head = `<div class="dayname">${g.name} · 공부할 한자 ${left}자 남음</div>`;
+    if (!isWeekday(t)) {
       const wk = learnedInWeek(t);
-      const wkKey = fmt(mondayOf(t));
-      main += `
-      <div class="card hero">
+      return `<div class="card hero">
         <div class="big-hanja">休</div>
         <div class="hunum-read">쉴 휴</div>
         <p class="muted">주말은 쉬는 날이에요. 월요일 아침에 새 한자로 만나요! 😊</p>
-        ${wk.length >= 2 && !S.weekly[wkKey]
-          ? `<p class="small">이번 주 <b>일주일 복습</b>을 아직 안 했어요.</p><a class="btn block" href="#/weekly">⭐ 일주일 복습 하기</a>`
-          : ''}
-        ${learnedN ? `<a class="btn soft block" href="#/review" style="margin-top:10px">🎲 자유 복습 (5문제)</a>` : ''}
+        ${wk.length >= 2 && !S.weekly[fmt(mondayOf(t))] ? `<p class="small">이번 주 <b>일주일 복습</b>을 아직 안 했어요.</p><a class="btn block" href="#/weekly">⭐ 일주일 복습 하기</a>` : ''}
+        ${S.order.length ? `<a class="btn soft block" href="#/review" style="margin-top:10px">🎲 자유 복습 (5문제)</a>` : ''}
       </div>`;
     }
-
-    GRADES.forEach((g) => {
-      if (gradeComplete(g) && !(S.exams[g.id] && S.exams[g.id].passed)) {
-        main += `
-        <div class="card notice">
-          <h3>🎓 ${g.name} 한자를 모두 배웠어요!</h3>
-          <p class="small muted">급수 시험 코너에서 ${g.name} 전체 한자를 복습하고 시험을 볼 수 있어요.</p>
-          <a class="btn ghost block" href="#/exam/${g.id}">${g.name} 전체 복습 · 시험 보기</a>
-        </div>`;
-      }
+    if (entry && entry.done) {
+      const c = entry.newIdx !== null && entry.newIdx !== undefined ? C(entry.newIdx) : null;
+      const extra = (entry.extra || []).map((i) => C(i).h).join(' ');
+      return `<div class="card hero">
+        ${head}
+        <div class="dayname">${DAY[t.getDay()]}요일 학습 완료! 🎉</div>
+        ${c ? `<div class="big-hanja">${c.h}</div><div class="hunum-read">${hunum(c)}</div>` : ''}
+        ${extra ? `<p class="small">더 배운 한자: <span class="hanja">${extra}</span></p>` : ''}
+        <p class="muted">${t.getDay() === 5 ? '한 주 동안 수고했어요! 주말엔 푹 쉬어요.' : '잘했어요! 내일 아침에 복습으로 다시 만나요.'}</p>
+        ${left ? `<a class="btn ghost block" href="#/extra">➕ 한 자 더 배우기</a>` : ''}
+        <div class="btn-row">
+          ${c ? `<button class="btn soft" data-open="${c.idx}">다시 보기</button>` : ''}
+          <a class="btn soft" href="#/review">자유 복습</a>
+        </div>
+      </div>`;
+    }
+    const plan = planToday();
+    const c = C(plan.newIdx);
+    const started = !!entry;
+    const rows = [];
+    if (plan.reviews.length) rows.push(['🔁', '', '어제 배운 한자 복습']);
+    ['learn', 'match', 'cloze', 'check', 'write', 'infer'].forEach((k) => {
+      const st = STAGES[k];
+      rows.push([st.e, st.n, `${st.t}${st.sub ? ` <span class="muted">· ${st.sub}</span>` : ''}`, st.c]);
     });
+    if (plan.week.length) rows.push(['⭐', '', `일주일 복습 · 이번 주 ${plan.week.length}자`, 'week']);
+    return `<div class="card hero today-card">
+      ${head}
+      <div class="big-hanja mystery">${started ? c.h : '?'}</div>
+      <p class="muted">${started ? '하던 학습을 이어서 해요.' : '오늘은 어떤 한자를 만날까요?'}</p>
+      <ol class="steps">${rows.map(([e, n, txt, cls]) => `<li class="${cls ? `st-${cls}` : ''}"><span class="num">${n || e}</span><span>${txt}</span></li>`).join('')}</ol>
+      <a class="btn block big" href="#/lesson">${started ? '이어서 하기' : '오늘의 학습 시작!'} · 약 5분</a>
+    </div>`;
+  }
 
-    const days = weekDates(t);
-    const cells = days.map((d, k) => {
+  function journeyHtml() {
+    return `<div class="journey">${GRADES.map((g, k) => {
+      const cls = S.passed[g.id] ? 'done' : k === S.gradeIdx && S.phase !== 'done' ? 'now' : '';
+      return `<span class="jn ${cls}">${S.passed[g.id] ? '✓ ' : ''}${g.name}</span>`;
+    }).join('<i></i>')}</div>`;
+  }
+
+  function renderHome() {
+    setTab('home');
+    syncPhase();
+    const t = today();
+    let main = '';
+    if (!S.order.length && !Object.keys(S.known).length && S.phase === 'level' && S.gradeIdx === 0 && !S.test) {
+      main += `
+      <div class="card welcome">
+        <h2>반가워요, ${esc(user)}! 👋</h2>
+        <p>먼저 <b>레벨테스트</b>로 내가 이미 아는 한자를 확인해요. 모르는 한자만 평일 아침 5분씩 공부하고,
+        급수 시험에서 <b>100점</b>을 받으면 다음 급수로 올라가요!</p>
+      </div>`;
+    }
+    main += journeyHtml();
+    main += phaseCard(t);
+
+    const g = curGrade();
+    const total = g.end - g.start;
+    let knownN = 0, learnedN = 0;
+    for (let i = g.start; i < g.end; i++) { if (S.known[i]) knownN++; else if (S.learned[i]) learnedN++; }
+    const ds = fmt(t);
+    const cells = weekDates(t).map((d, k) => {
       const e = S.log[d];
       const idx = e && e.newIdx !== null && e.newIdx !== undefined && S.learned[e.newIdx] === d ? e.newIdx : null;
       const cls = [e && e.done ? 'done' : '', d === ds ? 'today' : ''].join(' ');
       return `<div class="d ${cls}"><div class="lbl">${DAY[k + 1]}</div>
         <div class="cell">${idx !== null ? `<button class="cell-in hanja" data-open="${idx}">${C(idx).h}</button>` : (e && e.done ? '✔' : '')}</div></div>`;
     }).join('');
-    const cur = next !== null ? gradeOf(C(next)) : GRADES[GRADES.length - 1];
-    const curN = gradeLearnedCount(cur);
-    const curT = cur.end - cur.start;
     main += `
       <div class="card">
         <div class="row"><h3 style="margin:0">이번 주</h3><span class="spacer"></span>
@@ -692,13 +830,13 @@
       <div class="card">
         <div class="stats">
           <div><b>${streak()}</b><span>🔥 연속 학습일</span></div>
-          <div><b>${learnedN}</b><span>📚 배운 한자</span></div>
-          <div><b>${S.writings.length}</b><span>✏️ 글짓기</span></div>
+          <div><b>${Object.keys(S.known).length}</b><span>💡 이미 아는 한자</span></div>
+          <div><b>${S.order.length}</b><span>📚 공부한 한자</span></div>
         </div>
-        <div class="row" style="margin-top:16px"><b>${cur.name}</b><span class="spacer"></span><span class="small muted">${curN} / ${curT}자</span></div>
-        <div class="progress" style="margin-top:6px"><span style="width:${(curN / curT) * 100}%"></span></div>
+        <div class="row" style="margin-top:16px"><b>${g.name}</b><span class="spacer"></span>
+          <span class="small muted">아는 ${knownN} + 공부 ${learnedN} / ${total}자</span></div>
+        <div class="progress two" style="margin-top:6px"><span class="k" style="width:${(knownN / total) * 100}%"></span><span style="width:${(learnedN / total) * 100}%"></span></div>
       </div>`;
-
     $app.innerHTML = main;
     bindOpen();
   }
@@ -708,8 +846,19 @@
     const t = today();
     if (kind === 'lesson') {
       const e = S.log[fmt(t)];
-      if (!isWeekday(t) || (e && e.done)) { location.hash = '#/'; return; }
+      if (!isWeekday(t) || (e && e.done) || (S.phase !== 'study' && !(e && e.newIdx !== null && e.newIdx !== undefined))) { location.hash = '#/'; return; }
       if (!session || session.type !== 'lesson' || session.date !== fmt(t)) session = buildLesson();
+    } else if (kind === 'extra') {
+      const e = S.log[fmt(t)];
+      if (!session || session.type !== 'extra') {
+        if (!(e && e.done) || nextNewIdx() === null) { location.hash = '#/'; return; }
+        session = buildExtra();
+      }
+    } else if (kind === 'relearn') {
+      if (!session || session.type !== 'relearn') {
+        if (S.phase !== 'relearn' || !S.relearn.length) { location.hash = '#/'; return; }
+        session = buildRelearn();
+      }
     } else if (kind === 'weekly') {
       if (learnedInWeek(t).length === 0) { location.hash = '#/'; return; }
       if (!session || session.type !== 'weekly') session = buildWeekly();
@@ -739,7 +888,7 @@
 
   // 오늘 학습 1~6단계 진행 표시
   function trackerHtml(step) {
-    if (session.type !== 'lesson' || session.plan.newIdx === null) return '';
+    if (!['lesson', 'extra'].includes(session.type) || session.plan.newIdx === null || session.plan.newIdx === undefined) return '';
     const cur = STAGES[step.stage] ? STAGES[step.stage].n : 0;
     const passed = step.kind === 'done' || step.stage === 'week';
     return `<div class="tracker">${['learn', 'match', 'cloze', 'check', 'write', 'infer'].map((k) => {
@@ -1130,34 +1279,37 @@
   function renderDone() {
     stopTimer();
     finishSession();
+    if (S.phase === 'study' && !queueLeft()) { S.phase = 'exam'; save(); }
     document.body.classList.remove('in-lesson');
     const secs = Math.floor((Date.now() - session.started) / 1000);
     const mins = Math.max(1, Math.round(secs / 60));
-    let extra = '';
+    const g = curGrade();
     let title = '오늘 학습 끝!';
+    let msg = '잘했어요! 틀린 한자는 다음 복습에 다시 나와요.';
     let writing = '';
-    if (session.type === 'lesson') {
-      const i = session.plan.newIdx;
-      if (i !== null && i !== undefined) {
-        const g = gradeOf(C(i));
-        if (i === g.end - 1 || gradeComplete(g)) {
-          extra = `<div class="card notice" style="text-align:left;margin-top:16px">
-            <h3>🎓 ${g.name} 한자를 모두 배웠어요!</h3>
-            <p class="small muted">${g.name} ${g.end - g.start}자 전체를 복습하고 급수 시험을 볼 수 있어요.</p>
-            <a class="btn ghost block" href="#/exam/${g.id}">급수 시험 보러 가기</a></div>`;
-        }
-        const wr = S.writings.find((x) => x.date === session.date && x.idx === i);
-        if (wr) writing = `<div class="my-writing"><span class="lbl">✏️ 오늘 지은 글</span>${esc(wr.text)}</div>`;
-      }
-      if (session.plan.week.length) title = '한 주 학습 끝!';
-    } else if (session.type === 'weekly') {
-      title = '일주일 복습 끝!';
-    } else {
-      title = '복습 끝!';
+    let action = '';
+    const learnedNew = ['lesson', 'extra'].includes(session.type) && session.plan.newIdx !== null && session.plan.newIdx !== undefined;
+    if (learnedNew) {
+      const wr = S.writings.find((x) => x.date === session.date && x.idx === session.plan.newIdx);
+      if (wr) writing = `<div class="my-writing"><span class="lbl">✏️ 오늘 지은 글</span>${esc(wr.text)}</div>`;
+      if (session.type === 'lesson' && !session.plan.week.length) msg = '내일 아침 복습에서 다시 만나요.';
     }
-    const msg = session.type === 'lesson' && !session.plan.week.length
-      ? '내일 아침 복습에서 다시 만나요.'
-      : '잘했어요! 틀린 한자는 다음 복습에 다시 나와요.';
+    if (session.type === 'lesson' && session.plan.week.length) title = '한 주 학습 끝!';
+    if (session.type === 'extra') title = '한 자 더 배웠어요!';
+    if (session.type === 'weekly') title = '일주일 복습 끝!';
+    if (session.type === 'review') title = '복습 끝!';
+    if (session.type === 'relearn') {
+      title = '다시 보기 끝!';
+      msg = `이제 ${g.name} 급수 시험을 다시 볼 차례예요. 100점에 도전해요!`;
+      action = `<a class="btn block big" href="#/test">🏆 ${g.name} 급수 시험 다시 보기</a>`;
+    } else if (S.phase === 'exam' && learnedNew) {
+      action = `<div class="card notice" style="text-align:left;margin-top:16px">
+        <h3>🎓 ${g.name}에서 공부할 한자를 모두 배웠어요!</h3>
+        <p class="small muted">${g.name} ${g.end - g.start}자 전체로 급수 시험을 봐요. 100점이면 다음 급수로 올라가요.</p>
+        <a class="btn block" href="#/test">급수 시험 보러 가기</a></div>`;
+    } else if (learnedNew && nextNewIdx() !== null) {
+      action = `<a class="btn ghost block" href="#/extra" style="margin-top:12px">➕ 한 자 더 배우기 (남은 한자 ${queueLeft()}자)</a>`;
+    }
     const html = `<div class="card celebrate">
       <div class="emoji">🏅</div>
       <h2>${title}</h2>
@@ -1165,8 +1317,7 @@
       ${writing}
       <p class="muted">${msg}</p>
       ${session.type === 'lesson' ? `<p class="streak">🔥 연속 학습 <b>${streak()}일</b></p>` : ''}
-      <a class="btn block big" href="#/">홈으로</a>
-      ${extra}
+      ${session.type === 'relearn' ? action : `<a class="btn block big" href="#/">홈으로</a>${action}`}
     </div>`;
     session = null;
     return html;
@@ -1176,14 +1327,11 @@
   let listGrade = null;
   function renderList() {
     setTab('list');
-    if (listGrade === null) {
-      const n = nextNewIdx();
-      listGrade = n !== null ? C(n).gradeIdx : 0;
-    }
+    if (listGrade === null) listGrade = Math.min(S.gradeIdx, GRADES.length - 1);
     const g = GRADES[listGrade];
     const tabs = GRADES.map((x, k) => `<button class="${k === listGrade ? 'on' : ''}" data-g="${k}">${x.name}</button>`).join('');
     const cells = HANJA.slice(g.start, g.end).map((c) => {
-      const cls = S.missed.includes(c.idx) ? 'missed' : S.learned[c.idx] ? 'learned' : 'locked';
+      const cls = S.missed.includes(c.idx) ? 'missed' : S.learned[c.idx] ? 'learned' : S.known[c.idx] ? 'known' : 'locked';
       return `<button class="cell-btn ${cls}" data-open="${c.idx}" aria-label="${c.h} ${hunum(c)}">
         <span class="hanja">${c.h}</span><span class="hu">${hunum(c)}</span></button>`;
     }).join('');
@@ -1194,8 +1342,8 @@
       </div>
       <div class="tabs">${tabs}</div>
       <div class="card">
-        <div class="row"><b>${g.name}</b><span class="small muted">${gradeLearnedCount(g)} / ${g.end - g.start}자</span></div>
-        <div class="legend"><span><i style="background:var(--green)"></i>배운 한자</span>
+        <div class="row"><b>${g.name}</b>${S.passed[g.id] ? '<span class="pill green">통과 ✓</span>' : ''}</div>
+        <div class="legend"><span><i style="background:var(--blue)"></i>이미 아는 한자</span><span><i style="background:var(--green)"></i>공부한 한자</span>
           <span><i style="background:var(--red)"></i>다시 볼 한자</span><span><i style="background:var(--line)"></i>아직 안 배움</span></div>
         <div class="grid">${cells}</div>
       </div>
@@ -1217,34 +1365,25 @@
     const label = (a) => {
       if (a.type === 'lesson') {
         const c = a.idx !== null && a.idx !== undefined ? C(a.idx) : null;
-        return `📘 ${c ? `<button class="linkbtn hanja" data-open="${c.idx}">${c.h}</button> ${hunum(c)} 학습` : '복습'}${a.week ? ' · 일주일 복습' : ''} · 퀴즈 ${a.correct}/${a.total}`;
+        return `📘 ${c ? `<button class="linkbtn hanja" data-open="${c.idx}">${c.h}</button> ${hunum(c)} 학습` : '복습'}${a.extra ? ' (더 배우기)' : ''}${a.week ? ' · 일주일 복습' : ''} · 퀴즈 ${a.correct}/${a.total}`;
       }
       if (a.type === 'weekly') return `🗓 일주일 복습 · 퀴즈 ${a.correct}/${a.total}`;
       if (a.type === 'review') return `🔁 자유 복습 · 퀴즈 ${a.correct}/${a.total}`;
-      if (a.type === 'exam') return `🎓 ${a.grade} 급수 시험 ${a.score}점 ${a.passed ? '(합격)' : ''}`;
+      if (a.type === 'exam') return `🏆 ${a.grade} 급수 시험 ${a.score}점 ${a.passed ? '(통과)' : ''}`;
+      if (a.type === 'level') return `🧪 ${a.grade} 레벨테스트 · 아는 한자 ${a.known}/${a.total}`;
+      if (a.type === 'relearn') return `🔁 틀린 한자 다시 보기 ${(a.list || []).map((i) => C(i).h).join(' ')}`;
       if (a.type === 'writing') return `✏️ 글짓기: “${esc(a.text)}”`;
       return '';
     };
     const timeline = dates.map((d) => `<div class="tl-day"><div class="tl-date">${shortDate(d)}</div>
       <ul>${byDate[d].map((a) => `<li>${label(a)}</li>`).join('')}</ul></div>`).join('');
 
-    // 이 기기의 학생들(선생님용 한눈에 보기)
-    const rows = users().map((n) => {
-      const st = n === user ? S : loadState(n);
-      const last = st.activity.length ? st.activity[st.activity.length - 1].date : null;
-      const tq = st.activity.reduce((x, a) => x + (a.total || 0), 0);
-      const cq = st.activity.reduce((x, a) => x + (a.correct || 0), 0);
-      return `<tr${n === user ? ' class="me"' : ''}><td>${esc(n)}</td><td>${st.order.length}</td>
-        <td>${st.activity.filter((a) => a.type === 'lesson').length}</td><td>${st.writings.length}</td>
-        <td>${tq ? Math.round((cq / tq) * 100) + '%' : '-'}</td><td>${last ? shortDate(last) : '-'}</td></tr>`;
-    }).join('');
-
     $app.innerHTML = `
       <div class="card">
         <h2>${esc(user)}의 학습 기록</h2>
         <div class="stats" style="grid-template-columns:repeat(4,1fr)">
           <div><b>${lessons.length}</b><span>학습한 날</span></div>
-          <div><b>${S.order.length}</b><span>배운 한자</span></div>
+          <div><b>${S.order.length}</b><span>공부한 한자</span></div>
           <div><b>${S.writings.length}</b><span>글짓기</span></div>
           <div><b>${quizT ? Math.round((quizC / quizT) * 100) : 0}%</b><span>퀴즈 정답률</span></div>
         </div>
@@ -1252,219 +1391,243 @@
       <div class="card">
         <h3>날짜별 활동</h3>
         ${timeline || '<p class="muted small">아직 기록이 없어요. 오늘의 학습을 시작해 보세요!</p>'}
-      </div>
-      ${users().length > 1 ? `<div class="card">
-        <h3>이 기기의 학생들</h3>
-        <div style="overflow-x:auto"><table class="class-table">
-          <tr><th>이름</th><th>배운 한자</th><th>학습일</th><th>글짓기</th><th>정답률</th><th>최근</th></tr>${rows}</table></div>
-      </div>` : ''}`;
+      </div>`;
     bindOpen();
   }
 
-  /* ================= 화면: 급수 시험 ================= */
-  function renderExamHome() {
-    setTab('exam');
-    const items = GRADES.map((g) => {
-      const n = gradeLearnedCount(g);
-      const total = g.end - g.start;
-      const rec = S.exams[g.id];
-      const open = examOpen(g);
-      const status = rec && rec.passed ? `<span class="pill green">합격 · 최고 ${rec.best}점</span>`
-        : rec ? `<span class="pill">최고 ${rec.best}점</span>`
-        : open ? '<span class="pill blue">응시 가능</span>' : '<span class="pill gray">학습 중</span>';
-      return `<div class="card grade-item">
-        <div class="gname">${g.name}</div>
-        <div class="ginfo">
-          <div class="row">${status}<span class="small muted">${n} / ${total}자 학습</span></div>
-          <div class="progress" style="margin-top:8px"><span style="width:${(n / total) * 100}%"></span></div>
-        </div>
-        ${open ? `<a class="btn" href="#/exam/${g.id}">열기</a>` : '<button class="btn" disabled>🔒</button>'}
-      </div>`;
-    }).join('');
-    const upcoming = UPCOMING_GRADES.map((n) => `<span class="pill gray" style="margin:3px">${n}</span>`).join('');
-    $app.innerHTML = `
-      <div class="card">
-        <h2>급수 시험</h2>
-        <p class="small muted" style="margin:0">한 급수의 한자를 모두 배우면 열려요. <b>① 전체 복습</b>으로 정리한 뒤
-        <b>② 시험</b>에서 어휘 속 한자의 <b>뜻과 음</b>을 직접 써 보세요. ${PASS_SCORE}점 이상이면 합격!</p>
-      </div>
-      ${items}
-      <div class="card"><h3>준비 중인 급수</h3><div>${upcoming}</div></div>`;
+  /* ================= 레벨테스트 · 급수 시험 ================= */
+  // 두 시험은 같은 모양입니다: 한자 1자 + 활용 어휘 2개(한자, 한글 읽기) → 뜻(훈)과 음 쓰기
+  function makeTest(kind) {
+    const g = curGrade();
+    let idxs = HANJA.slice(g.start, g.end).map((c) => c.idx);
+    if (kind === 'exam') idxs = shuffle(idxs);
+    return {
+      kind, grade: g.id, i: 0, finished: false, started: fmt(today()),
+      items: idxs.map((i) => ({ idx: i, words: shuffle(C(i).words.map((_, k) => k)).slice(0, 2), m: '', s: '', skip: false, over: false })),
+    };
   }
+  const itemOk = (it) => !it.skip && soundOk(C(it.idx), it.s) && (it.over || meaningOk(C(it.idx), it.m));
+  const testName = (t) => (t.kind === 'level' ? '레벨테스트' : '급수 시험');
 
-  let hideHunum = false;
-  function renderExamGrade(id) {
-    setTab('exam');
-    const g = GRADES.find((x) => x.id === id);
-    if (!g) { location.hash = '#/exam'; return; }
-    if (!examOpen(g)) {
-      $app.innerHTML = `<div class="card center"><h2>🔒 ${g.name}</h2>
-        <p class="muted">${g.name} 한자를 모두 배우면 열려요. (${gradeLearnedCount(g)} / ${g.end - g.start}자)</p>
-        <p class="small muted">이미 아는 급수라면 설정에서 '모든 급수 시험 열기'를 켤 수 있어요.</p>
-        <a class="btn ghost" href="#/exam">돌아가기</a></div>`;
-      return;
-    }
-    const total = g.end - g.start;
-    const cells = HANJA.slice(g.start, g.end).map((c) => `
-      <button class="cell-btn ${S.missed.includes(c.idx) ? 'missed' : 'learned'} ${hideHunum ? 'hide-hu' : ''}" data-open="${c.idx}">
-        <span class="hanja">${c.h}</span><span class="hu">${hunum(c)}</span></button>`).join('');
-    const rec = S.exams[g.id];
-    $app.innerHTML = `
-      <div class="row" style="margin-bottom:10px"><a href="#/exam" class="small">← 급수 시험</a></div>
-      <div class="card">
-        <h2>${g.name} · ① 전체 복습</h2>
-        <p class="small muted">${total}자를 훑어보며 뜻과 음을 떠올려 보세요. 한자를 누르면 활용 어휘가 보여요.</p>
-        <label class="row small" style="margin:8px 0 12px"><input type="checkbox" class="switch" id="hide" ${hideHunum ? 'checked' : ''}> 뜻·음 가리고 스스로 떠올리기</label>
-        <div class="grid">${cells}</div>
-      </div>
-      <div class="card">
-        <h2>② 급수 시험</h2>
-        <p class="small muted">한글 어휘에서 <mark>색으로 표시된 글자</mark>에 쓰인 한자의 <b>뜻</b>과 <b>음</b>을 써요.
-          예) 학<mark>교</mark>(뜻: 공부하는 곳) → 뜻: 학교, 음: 교</p>
-        ${rec ? `<p class="small">지난 시험 ${rec.last}점 · 최고 ${rec.best}점 ${rec.passed ? '· <b style="color:var(--green)">합격</b>' : ''}</p>` : ''}
-        <div class="btn-row">
-          <a class="btn soft" href="#/exam/${g.id}/test/20">20문항</a>
-          <a class="btn" href="#/exam/${g.id}/test/all">전체 ${total}문항</a>
-        </div>
-      </div>`;
-    document.getElementById('hide').addEventListener('change', (e) => { hideHunum = e.target.checked; renderExamGrade(id); });
-    bindOpen();
-  }
-
-  let exam = null;
-  function startExam(id, n) {
-    const g = GRADES.find((x) => x.id === id);
-    if (!g || !examOpen(g)) { location.hash = '#/exam'; return; }
-    const key = `${id}/${n}`;
-    if (!exam || exam.key !== key) {
-      const idxs = shuffle(HANJA.slice(g.start, g.end).map((c) => c.idx));
-      const count = n === 'all' ? idxs.length : Math.min(+n || 20, idxs.length);
-      exam = {
-        key, grade: g,
-        qs: idxs.slice(0, count).map((i) => ({ idx: i, word: pick(C(i).words), m: '', s: '', okM: false, okS: false, checked: false })),
-        i: 0,
-      };
+  function startTest(kind) {
+    const want = kind === 'level' ? 'level' : 'exam';
+    if (S.phase !== want) { location.hash = '#/'; return; }
+    if (!S.test || S.test.kind !== kind || S.test.grade !== curGrade().id) {
+      S.test = makeTest(kind);
+      save();
     }
     document.body.classList.add('in-lesson');
-    renderExamQ();
+    renderTest();
   }
 
-  function renderExamQ() {
-    const q = exam.qs[exam.i];
-    if (!q) { renderExamResult(); return; }
-    const c = C(q.idx);
-    const pct = (exam.i / exam.qs.length) * 100;
+  function renderTest() {
+    const t = S.test;
+    if (t.i >= t.items.length) { renderTestResult(); return; }
+    const it = t.items[t.i];
+    const c = C(it.idx);
+    const g = GRADES.find((x) => x.id === t.grade);
+    const pct = (t.i / t.items.length) * 100;
+    const words = it.words.map((k) => {
+      const w = c.words[k];
+      return `<span class="tw"><span class="hanja">${hl(w.word, c.h)}</span><small>(${w.read})</small></span>`;
+    }).join('<span class="tw-dot">·</span>');
     $app.innerHTML = `
       <div class="lesson-head">
-        <button class="close-x" id="quit" aria-label="시험 그만두기">✕</button>
+        <button class="close-x" id="quit" aria-label="나중에 이어서 하기">✕</button>
         <div class="progress"><span style="width:${pct}%"></span></div>
-        <span class="timer">${exam.i + 1} / ${exam.qs.length}</span>
+        <span class="timer">${t.i + 1} / ${t.items.length}</span>
       </div>
       <div class="card lesson-card">
-        <div class="stage stage-week"><span class="stage-e">🏆</span><b>${exam.grade.name} 급수 시험</b></div>
-        ${wordQuestionHtml(c, q.word)}
+        <div class="stage stage-${t.kind === 'level' ? 's3' : 'week'}"><span class="stage-e">${t.kind === 'level' ? '🧪' : '🏆'}</span><b>${g.name} ${testName(t)}</b></div>
+        <div class="quiz-q">
+          <div class="test-hanja">${c.h}</div>
+          <div class="test-words">${words}</div>
+          <div class="prompt">이 한자의 <b>뜻(훈)</b>과 <b>음</b>을 쓰세요.</div>
+        </div>
         <form id="f" autocomplete="off">
           <div class="exam-inputs">
-            <div><label for="m">뜻 (훈)</label><input id="m" lang="ko" value="${esc(q.m)}"></div>
-            <div><label for="s">음 (소리)</label><input id="s" lang="ko" value="${esc(q.s)}"></div>
+            <div><label for="m">뜻 (훈)</label><input id="m" lang="ko" enterkeyhint="next"></div>
+            <div><label for="s">음 (소리)</label><input id="s" lang="ko" enterkeyhint="done"></div>
           </div>
           <div id="fb"></div>
-          <button class="btn block big" id="go">정답 확인</button>
+          <div class="btn-row">
+            <button type="button" class="btn soft" id="skip">🤔 몰라요</button>
+            <button class="btn" id="go">다음 →</button>
+          </div>
         </form>
+        <p class="small muted center">${t.kind === 'level' ? '모르는 한자는 \'몰라요\'를 눌러요. 틀린 한자만 공부하게 돼요.' : '채점은 모든 문제를 푼 뒤에 해요.'}</p>
       </div>`;
-    document.getElementById('quit').addEventListener('click', () => {
-      if (confirm('시험을 그만둘까요? 지금까지 푼 문제는 저장되지 않아요.')) {
-        const gid = exam.grade.id;
-        exam = null;
-        location.hash = `#/exam/${gid}`;
-      }
-    });
     const m = document.getElementById('m');
     const s = document.getElementById('s');
     m.focus();
+    m.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); s.focus(); } });
+    const advance = () => { t.i++; save(); renderTest(); window.scrollTo(0, 0); };
+    document.getElementById('quit').addEventListener('click', () => { location.hash = '#/'; });
+    document.getElementById('skip').addEventListener('click', () => {
+      Object.assign(it, { m: '', s: '', skip: true });
+      advance();
+    });
     document.getElementById('f').addEventListener('submit', (e) => {
       e.preventDefault();
-      if (q.checked) { exam.i++; renderExamQ(); return; }
-      q.m = m.value.trim();
-      q.s = s.value.trim();
-      if (!q.m && !q.s) { m.focus(); return; }
-      q.okM = meaningOk(c, q.m);
-      q.okS = soundOk(c, q.s);
-      q.checked = true;
-      showExamFeedback(q, c);
+      if (!m.value.trim() || !s.value.trim()) {
+        document.getElementById('fb').innerHTML = '<div class="feedback no">뜻과 음을 모두 써 주세요. 모르면 \'몰라요\'를 눌러요.</div>';
+        (m.value.trim() ? s : m).focus();
+        return;
+      }
+      Object.assign(it, { m: m.value.trim(), s: s.value.trim(), skip: false });
+      advance();
     });
   }
 
-  function examAnswer(c, w) {
-    const own = charHunum(c.h, targetPos(c, w).syl);
-    return `${own.m} ${own.s}`;
-  }
-  function showExamFeedback(q, c) {
-    const m = document.getElementById('m');
-    const s = document.getElementById('s');
-    m.readOnly = s.readOnly = true;
-    m.className = q.okM ? 'ok' : 'no';
-    s.className = q.okS ? 'ok' : 'no';
-    const ok = q.okM && q.okS;
-    const override = !q.okM && q.m
-      ? `<button type="button" class="linkbtn small" id="ovr">내가 쓴 뜻 "${esc(q.m)}"도 맞아요 (인정하기)</button>` : '';
-    document.getElementById('fb').innerHTML = `
-      <div class="feedback ${ok ? 'ok' : 'no'}">
-        ${ok ? '⭕ 정답!' : '❌ 정답은'} <b>${examAnswer(c, q.word)}</b>(<span class="hj">${c.h}</span>)<br>
-        ${breakdown(q.word)}
-      </div>${override}`;
-    const go = document.getElementById('go');
-    go.textContent = exam.i + 1 < exam.qs.length ? '다음 문제 →' : '결과 보기';
-    go.focus();
-    const ovr = document.getElementById('ovr');
-    if (ovr) ovr.addEventListener('click', () => { q.okM = true; showExamFeedback(q, c); });
-  }
-
-  function renderExamResult() {
-    const g = exam.grade;
-    const total = exam.qs.length;
-    const right = exam.qs.filter((q) => q.okM && q.okS).length;
-    const score = Math.round((right / total) * 100);
-    const passed = score >= PASS_SCORE;
-    if (!exam.saved) {
-      const rec = S.exams[g.id] || { best: 0, passed: false };
-      S.exams[g.id] = {
-        best: Math.max(rec.best, score), last: score, passed: rec.passed || passed, date: fmt(today()),
-      };
-      exam.qs.forEach((q) => { if (!(q.okM && q.okS)) addMissed(q.idx); else removeMissed(q.idx); });
-      logActivity({ type: 'exam', grade: g.name, score, passed, correct: right, total });
-      save();
-      exam.saved = true;
-    }
-    const wrong = exam.qs.filter((q) => !(q.okM && q.okS));
-    const list = wrong.map((q) => {
-      const c = C(q.idx);
-      return `<li><button class="linkbtn hanja" style="font-size:30px;text-decoration:none;color:var(--red)" data-open="${c.idx}">${c.h}</button>
-        <div><b>${hunum(c)}</b><div class="small muted">내 답: ${esc(q.m || '(빈칸)')} / ${esc(q.s || '(빈칸)')} · <span class="hanja">${q.word.word}</span>(${q.word.read})</div></div></li>`;
-    }).join('');
+  function renderTestResult() {
+    const t = S.test;
+    const g = GRADES.find((x) => x.id === t.grade);
+    t.finished = true;
+    save();
     document.body.classList.remove('in-lesson');
+    const wrong = t.items.filter((it) => !itemOk(it));
+    const right = t.items.length - wrong.length;
+    const scoreN = Math.round((right / t.items.length) * 100);
+    const list = wrong.map((it) => {
+      const c = C(it.idx);
+      const canOver = !it.skip && it.m && soundOk(c, it.s) && !meaningOk(c, it.m);
+      return `<li><button class="cell-in hanja miss" data-open="${c.idx}">${c.h}</button>
+        <div class="wl-body"><b>${hunum(c)}</b>
+          <div class="small muted">내 답: ${it.skip ? '몰라요' : `${esc(it.m)} ${esc(it.s)}`}</div>
+          ${canOver ? `<button class="linkbtn small" data-over="${t.items.indexOf(it)}">내가 쓴 뜻 "${esc(it.m)}"도 맞아요 (선생님과 확인 후 인정)</button>` : ''}
+        </div></li>`;
+    }).join('');
+    const head = t.kind === 'level'
+      ? `<div class="score">${right}<small> / ${t.items.length}자</small></div>
+         <p>이미 아는 한자 <b>${right}자</b> · 공부할 한자 <b>${wrong.length}자</b></p>
+         <p class="small muted">${wrong.length ? `이제 공부할 한자 ${wrong.length}자만 평일 아침에 하루 한 자씩 배워요.` : `${g.name} 한자를 모두 알고 있어요! 바로 다음 급수로 올라가요.`}</p>`
+      : `<div class="score">${scoreN}<small>점</small></div>
+         <p>${t.items.length}문항 중 ${right}문항 정답</p>
+         <div class="stamp ${scoreN === 100 ? 'pass' : 'fail'}">${scoreN === 100 ? '통과' : '다시 도전'}</div>
+         <p class="small muted" style="margin-top:14px">${scoreN === 100 ? '완벽해요! 다음 급수 레벨테스트로 올라가요.' : `100점이어야 다음 급수로 올라가요. 틀린 ${wrong.length}자를 다시 익히고 급수 시험을 다시 봐요.`}</p>`;
     $app.innerHTML = `
       <div class="card celebrate">
-        <div class="stage-label">${g.name} 급수 시험 결과</div>
-        <div class="score">${score}<small>점</small></div>
-        <p class="muted">${total}문항 중 ${right}문항 정답</p>
-        <div class="stamp ${passed ? 'pass' : 'fail'}">${passed ? '합격' : '불합격'}</div>
-        <p class="small muted" style="margin-top:16px">${passed ? '축하해요! 다음 급수도 매일 5분씩 힘내요.' : `${PASS_SCORE}점 이상이면 합격이에요. 틀린 한자를 복습하고 다시 도전해요!`}</p>
-        <div class="btn-row"><a class="btn soft" href="#/exam/${g.id}">전체 복습</a><a class="btn" href="#/">홈으로</a></div>
+        <div class="stage-label">${g.name} ${testName(t)} 결과</div>
+        ${head}
+        <button class="btn block big" id="confirm">확인</button>
       </div>
-      ${wrong.length ? `<div class="card"><h3>틀린 한자 ${wrong.length}자</h3>
-        <p class="small muted">틀린 한자는 '다시 볼 한자'에 담겨 매일 복습에 나와요.</p>
+      ${wrong.length ? `<div class="card"><h3>${t.kind === 'level' ? '공부할 한자' : '틀린 한자'} ${wrong.length}자</h3>
         <ul class="wrong-list">${list}</ul></div>` : ''}`;
     bindOpen();
-    exam = null;
+    $app.querySelectorAll('[data-over]').forEach((b) => b.addEventListener('click', () => {
+      t.items[+b.dataset.over].over = true;
+      save();
+      renderTestResult();
+    }));
+    document.getElementById('confirm').addEventListener('click', () => { finalizeTest(); });
+  }
+
+  function passGrade(g) {
+    S.passed[g.id] = fmt(today());
+    S.gradeIdx = GRADES.indexOf(g) + 1;
+    S.queue = [];
+    S.relearn = [];
+    S.phase = S.gradeIdx >= GRADES.length ? 'done' : 'level';
+  }
+  function finalizeTest() {
+    const t = S.test;
+    const g = GRADES.find((x) => x.id === t.grade);
+    const ds = fmt(today());
+    const wrong = t.items.filter((it) => !itemOk(it)).map((it) => it.idx);
+    const right = t.items.length - wrong.length;
+    let next;
+    if (t.kind === 'level') {
+      t.items.forEach((it) => { if (itemOk(it) && !S.learned[it.idx]) S.known[it.idx] = ds; });
+      S.levels[g.id] = { date: ds, known: right, total: t.items.length };
+      logActivity({ type: 'level', grade: g.name, known: right, total: t.items.length });
+      if (!wrong.length) {
+        passGrade(g);
+        next = 'pass';
+      } else {
+        S.queue = wrong.sort((a, b) => a - b);
+        S.phase = 'study';
+        next = 'study';
+      }
+    } else {
+      const scoreN = Math.round((right / t.items.length) * 100);
+      const rec = S.exams[g.id] || { best: 0, attempts: 0 };
+      S.exams[g.id] = { best: Math.max(rec.best, scoreN), last: scoreN, attempts: rec.attempts + 1, date: ds };
+      logActivity({ type: 'exam', grade: g.name, score: scoreN, passed: scoreN === 100, correct: right, total: t.items.length });
+      wrong.forEach(addMissed);
+      if (!wrong.length) {
+        passGrade(g);
+        next = 'pass';
+      } else {
+        S.relearn = wrong;
+        S.phase = 'relearn';
+        next = 'relearn';
+      }
+    }
+    S.test = null;
+    save();
+    const ng = S.phase === 'done' ? null : curGrade();
+    const body = next === 'pass'
+      ? `<div class="emoji">🎉</div><h2>${g.name} 통과!</h2>
+         ${ng ? `<p>이제 <b>${ng.name}</b> 레벨테스트를 볼 차례예요.</p><a class="btn block big" href="#/level">${ng.name} 레벨테스트 시작</a>`
+              : '<p>준비된 모든 급수를 통과했어요! 정말 대단해요.</p>'}
+         <a class="btn soft block" href="#/" style="margin-top:10px">나중에 하기</a>`
+      : next === 'study'
+        ? `<div class="emoji">📚</div><h2>공부할 한자 ${wrong.length}자</h2>
+           <p>평일 아침에 하루 한 자씩 배워요. 다 배우면 ${g.name} 급수 시험을 봐요.</p><a class="btn block big" href="#/">홈으로</a>`
+        : `<div class="emoji">💪</div><h2>틀린 한자 ${wrong.length}자 다시 보기</h2>
+           <p>틀린 한자를 다시 익히고 ${g.name} 급수 시험을 다시 봐요.</p><a class="btn block big" href="#/relearn">다시 보기 시작</a>
+           <a class="btn soft block" href="#/" style="margin-top:10px">나중에 하기</a>`;
+    $app.innerHTML = `<div class="card celebrate">${body}</div>`;
+  }
+
+  /* ================= 화면: 급수 시험 탭 ================= */
+  let hideHunum = false;
+  function renderExamHome() {
+    setTab('exam');
+    const g = curGrade();
+    const rows = GRADES.map((x, k) => {
+      const lv = S.levels[x.id];
+      const ex = S.exams[x.id];
+      let status;
+      if (S.passed[x.id]) status = '<span class="pill green">통과 ✓</span>';
+      else if (k === S.gradeIdx) status = `<span class="pill">${{ level: '레벨테스트', study: '공부 중', exam: '시험 볼 차례', relearn: '다시 보기' }[S.phase] || ''}</span>`;
+      else status = '<span class="pill gray">잠김</span>';
+      return `<div class="card grade-item${k === S.gradeIdx && !S.passed[x.id] ? ' now' : ''}">
+        <div class="gname">${x.name}</div>
+        <div class="ginfo">${status}
+          <div class="small muted">${lv ? `레벨테스트: 아는 한자 ${lv.known}/${lv.total}` : '레벨테스트 전'}${ex ? ` · 시험 ${ex.attempts}번, 최근 ${ex.last}점` : ''}</div>
+        </div></div>`;
+    }).join('');
+    let review = '';
+    if (S.phase !== 'level' && S.phase !== 'done') {
+      const cells = HANJA.slice(g.start, g.end).map((c) => `
+        <button class="cell-btn ${S.missed.includes(c.idx) ? 'missed' : S.known[c.idx] ? 'known' : S.learned[c.idx] ? 'learned' : 'locked'} ${hideHunum ? 'hide-hu' : ''}" data-open="${c.idx}">
+          <span class="hanja">${c.h}</span><span class="hu">${hunum(c)}</span></button>`).join('');
+      review = `<div class="card">
+        <h2>📖 ${g.name} 전체 복습</h2>
+        <p class="small muted">급수 시험은 ${g.name} ${g.end - g.start}자를 모두 봐요. 훑어보며 뜻과 음을 떠올려 보세요.</p>
+        <label class="row small" style="margin:8px 0 12px"><input type="checkbox" class="switch" id="hide" ${hideHunum ? 'checked' : ''}> 뜻·음 가리고 스스로 떠올리기</label>
+        <div class="grid">${cells}</div>
+        ${S.phase === 'exam' ? '<a class="btn block big" href="#/test">🏆 급수 시험 보기</a>' : ''}
+      </div>`;
+    }
+    $app.innerHTML = `
+      <div class="card">
+        <h2>급수 시험</h2>
+        <p class="small muted" style="margin:0">레벨테스트 → 틀린 한자 공부 → 급수 시험(급수 전체) 순서로 진행해요.
+          <b>100점</b>이어야 다음 급수로 올라가요. 틀리면 틀린 한자를 다시 익히고 다시 도전해요.</p>
+      </div>
+      ${review}
+      ${rows}
+      <div class="card"><h3>준비 중인 급수</h3><div>${UPCOMING_GRADES.map((n) => `<span class="pill gray" style="margin:3px">${n}</span>`).join('')}</div></div>`;
+    const hide = document.getElementById('hide');
+    if (hide) hide.addEventListener('change', (e) => { hideHunum = e.target.checked; renderExamHome(); });
+    bindOpen();
   }
 
   /* ================= 화면: 설정 ================= */
   function renderSettings() {
     setTab('settings');
-    const next = nextNewIdx();
-    const curG = next !== null ? C(next).gradeIdx : -1;
-    const options = GRADES.map((g, k) => `<option value="${k}" ${k === curG ? 'selected' : ''}>${g.name}부터</option>`).join('');
     $app.innerHTML = `
       <div class="card">
         <h2>설정</h2>
@@ -1472,13 +1635,16 @@
           <div class="txt"><b>학생</b><div class="small muted">${esc(user)}</div></div>
           <button class="btn ghost" id="switch">학생 바꾸기</button>
         </div>
+        <form class="setting pw-form" id="pwf" autocomplete="off">
+          <div class="txt"><b>비밀번호 바꾸기</b>
+            <input id="pw0" type="password" class="text-input" placeholder="지금 비밀번호">
+            <input id="pw1" type="password" class="text-input" placeholder="새 비밀번호 (4글자 이상)">
+            <div id="pwfb"></div></div>
+          <button class="btn ghost">바꾸기</button>
+        </form>
         <div class="setting">
-          <div class="txt"><b>다음에 배울 급수</b><div class="small muted">이미 아는 급수는 건너뛸 수 있어요.</div></div>
-          <select id="grade">${options}</select>
-        </div>
-        <div class="setting">
-          <div class="txt"><b>모든 급수 시험 열기</b><div class="small muted">배우지 않은 급수도 시험을 볼 수 있어요.</div></div>
-          <input type="checkbox" class="switch" id="unlock" ${S.unlockAll ? 'checked' : ''}>
+          <div class="txt"><b>선생님 메뉴</b><div class="small muted">학생 기록 보기, 비밀번호 초기화</div></div>
+          <a class="btn ghost" href="#/teacher">열기</a>
         </div>
         <div class="setting">
           <div class="txt"><b>학습 기록 초기화</b><div class="small muted">${esc(user)}의 배운 한자, 글짓기, 시험 기록이 모두 지워져요.</div></div>
@@ -1492,6 +1658,7 @@
           <b>망각 곡선</b>을 발견했어요. 하지만 잊어버리기 전에 다시 떠올리면 기억이 점점 오래 남아요.</p>
         ${curveSvg()}
         <ol class="plain small">
+          <li><b>🧪 레벨테스트</b> — 급수마다 먼저 한자와 활용 어휘 2개를 보고 뜻과 음을 써요. 이미 아는 한자는 건너뛰고 <b>틀린 한자만</b> 공부해요.</li>
           <li><b>① 오늘의 한자</b> — 뜻(훈)과 소리(음)를 익혀요.</li>
           <li><b>② 활용 어휘 ①</b> — 한자 아래 음훈을 힌트로 어휘와 뜻을 선으로 연결해요.</li>
           <li><b>③ 활용 어휘 ②</b> — 문장의 빈칸에 알맞은 활용 어휘를 넣어요.</li>
@@ -1501,7 +1668,7 @@
           <li><b>1일 후 복습</b> — 다음 학습일 아침에 바로 전 한자를 퀴즈로 떠올려요. (금요일 한자는 월요일에)</li>
           <li><b>일주일 복습</b> — 금요일마다 그 주의 한자 5자를 모두 다시 풀어요.</li>
           <li><b>틀린 한자</b> — 틀리면 '다시 볼 한자'로 모아 매일 복습에 최대 ${MAX_EXTRA_REVIEW}자씩 다시 나와요.</li>
-          <li><b>급수 시험</b> — 한 급수를 다 배우면 전체 복습 후 시험(한글 어휘 제시 → 뜻과 음 쓰기)을 봐요.</li>
+          <li><b>🏆 급수 시험</b> — 틀린 한자를 다 배우면 급수 전체로 시험을 봐요. <b>100점</b>이면 다음 급수 레벨테스트로 올라가고, 아니면 틀린 한자를 다시 익히고 다시 도전해요. (완전 학습)</li>
         </ol>
       </div>
 
@@ -1512,13 +1679,17 @@
         <p class="small muted">준비 중: ${UPCOMING_GRADES.join(', ')}</p>
       </div>`;
     document.getElementById('switch').addEventListener('click', () => { logout(); location.hash = '#/'; route(); });
-    document.getElementById('grade').addEventListener('change', (e) => {
-      const g = GRADES[+e.target.value];
-      S.pointer = g.start;
-      save();
-      renderSettings();
+    document.getElementById('pwf').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const fb = (t, ok) => { document.getElementById('pwfb').innerHTML = `<div class="feedback ${ok ? 'ok' : 'no'}">${t}</div>`; };
+      const p0 = document.getElementById('pw0').value;
+      const p1 = document.getElementById('pw1').value;
+      if (!checkPassword(user, p0)) return fb('지금 비밀번호가 맞지 않아요.');
+      if (p1.length < 4) return fb('새 비밀번호는 4글자 이상으로 만들어요.');
+      setPassword(user, p1);
+      document.getElementById('pw0').value = document.getElementById('pw1').value = '';
+      fb('비밀번호를 바꿨어요.', true);
     });
-    document.getElementById('unlock').addEventListener('change', (e) => { S.unlockAll = e.target.checked; save(); });
     document.getElementById('reset').addEventListener('click', () => {
       if (confirm(`정말 ${user}의 모든 학습 기록을 지울까요? 되돌릴 수 없어요.`)) {
         S = blankState();
@@ -1558,6 +1729,110 @@
     </svg>`;
   }
 
+  /* ================= 화면: 선생님 메뉴 ================= */
+  let teacherOk = false;
+  let teacherOpen = null;
+  const PHASE_NAME = { level: '레벨테스트', study: '공부 중', exam: '시험 볼 차례', relearn: '다시 보기', done: '모두 통과' };
+  function renderTeacher() {
+    setTab('settings');
+    if (!user) document.body.classList.add('logged-out');
+    const back = user ? '#/settings' : '#/';
+    if (!teacherSet() || !teacherOk) {
+      const first = !teacherSet();
+      $app.innerHTML = `
+        <div class="row" style="margin-bottom:10px"><a href="${back}" class="small">← 돌아가기</a></div>
+        <div class="card">
+          <h2>👩‍🏫 선생님 메뉴</h2>
+          <p class="small muted">${first ? '처음 한 번 선생님 비밀번호를 정해요. 학생 비밀번호를 초기화하고 학생 기록을 볼 때 써요.' : '선생님 비밀번호를 넣어 주세요.'}</p>
+          <form id="tf" autocomplete="off">
+            <input id="t1" type="password" class="text-input" placeholder="${first ? '선생님 비밀번호 만들기 (4글자 이상)' : '선생님 비밀번호'}">
+            ${first ? '<input id="t2" type="password" class="text-input" placeholder="한 번 더">' : ''}
+            <div id="fb"></div>
+            <button class="btn block" style="margin-top:12px">${first ? '만들기' : '들어가기'}</button>
+          </form>
+        </div>`;
+      document.getElementById('tf').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const fb = (t) => { document.getElementById('fb').innerHTML = `<div class="feedback no">${t}</div>`; };
+        const p1 = document.getElementById('t1').value;
+        if (first) {
+          if (p1.length < 4) return fb('4글자 이상으로 만들어 주세요.');
+          if (p1 !== document.getElementById('t2').value) return fb('두 비밀번호가 달라요.');
+          setTeacher(p1);
+        } else if (!checkTeacher(p1)) {
+          return fb('비밀번호가 맞지 않아요.');
+        }
+        teacherOk = true;
+        renderTeacher();
+      });
+      return;
+    }
+    const list = users();
+    const rows = list.map((n) => {
+      const st = n === user ? S : loadState(n);
+      const g = GRADES[Math.min(st.gradeIdx, GRADES.length - 1)];
+      const last = st.activity.length ? st.activity[st.activity.length - 1].date : null;
+      const ex = st.exams[g.id];
+      const left = st.phase === 'study' ? ` (${st.queue.filter((x) => !st.learned[x]).length}자 남음)` : '';
+      const detail = teacherOpen === n ? `<tr class="detail"><td colspan="6">
+          <b>통과한 급수</b> ${GRADES.filter((x) => st.passed[x.id]).map((x) => x.name).join(', ') || '없음'}<br>
+          <b>최근 글짓기</b><ul class="plain-list">${st.writings.slice(-5).reverse().map((w) => `<li>${shortDate(w.date)} “${esc(w.text)}”</li>`).join('') || '<li>없음</li>'}</ul>
+          <div class="row" style="margin-top:8px">
+            <button class="btn soft" data-reset="${esc(n)}">비밀번호 초기화</button>
+            <button class="btn ghost" data-del="${esc(n)}">학생 삭제</button>
+          </div></td></tr>` : '';
+      return `<tr><td><button class="linkbtn" data-open-st="${esc(n)}">${esc(n)}</button></td>
+        <td>${st.phase === 'done' ? '완료' : g.name}<div class="small muted">${PHASE_NAME[st.phase] || ''}${left}</div></td>
+        <td>${Object.keys(st.known).length}</td><td>${st.order.length}</td>
+        <td>${ex ? `${ex.last}점<div class="small muted">${ex.attempts}번</div>` : '-'}</td>
+        <td>${last ? shortDate(last) : '-'}</td></tr>${detail}`;
+    }).join('');
+    $app.innerHTML = `
+      <div class="row" style="margin-bottom:10px"><a href="${back}" class="small">← 돌아가기</a></div>
+      <div class="card">
+        <h2>👩‍🏫 선생님 메뉴</h2>
+        <p class="small muted">이 기기에서 공부한 학생 ${list.length}명 · 이름을 누르면 자세히 보고 비밀번호를 초기화할 수 있어요.</p>
+        ${list.length ? `<div style="overflow-x:auto"><table class="class-table">
+          <tr><th>이름</th><th>급수·단계</th><th>아는<br>한자</th><th>공부한<br>한자</th><th>급수<br>시험</th><th>최근</th></tr>${rows}</table></div>`
+          : '<p class="muted">아직 학생이 없어요.</p>'}
+      </div>
+      <div class="card">
+        <form class="setting" id="tpw" autocomplete="off">
+          <div class="txt"><b>선생님 비밀번호 바꾸기</b><input id="tn" type="password" class="text-input" placeholder="새 비밀번호 (4글자 이상)"><div id="tfb"></div></div>
+          <button class="btn ghost">바꾸기</button>
+        </form>
+        <button class="btn soft block" id="tout" style="margin-top:8px">선생님 메뉴 닫기</button>
+      </div>`;
+    $app.querySelectorAll('[data-open-st]').forEach((b) => b.addEventListener('click', () => {
+      teacherOpen = teacherOpen === b.dataset.openSt ? null : b.dataset.openSt;
+      renderTeacher();
+    }));
+    $app.querySelectorAll('[data-reset]').forEach((b) => b.addEventListener('click', () => {
+      const n = b.dataset.reset;
+      const pw = prompt(`${n}의 새 비밀번호를 입력하세요 (4글자 이상)`);
+      if (pw === null) return;
+      if (pw.length < 4) { alert('4글자 이상으로 입력해 주세요.'); return; }
+      setPassword(n, pw);
+      alert(`${n}의 비밀번호를 바꿨어요.`);
+    }));
+    $app.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => {
+      const n = b.dataset.del;
+      if (!confirm(`${n}의 모든 학습 기록을 지우고 학생을 삭제할까요? 되돌릴 수 없어요.`)) return;
+      removeUser(n);
+      if (n === user) logout();
+      teacherOpen = null;
+      renderTeacher();
+    }));
+    document.getElementById('tpw').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const p = document.getElementById('tn').value;
+      const ok = p.length >= 4;
+      if (ok) setTeacher(p);
+      document.getElementById('tfb').innerHTML = `<div class="feedback ${ok ? 'ok' : 'no'}">${ok ? '바꿨어요.' : '4글자 이상으로 입력해 주세요.'}</div>`;
+    });
+    document.getElementById('tout').addEventListener('click', () => { teacherOk = false; location.hash = back; });
+  }
+
   /* ================= 라우터 ================= */
   function route() {
     const hash = location.hash.replace(/^#\/?/, '');
@@ -1567,23 +1842,23 @@
     who.textContent = user ? `👤 ${user}` : '';
     who.hidden = !user;
     document.querySelectorAll('.modal-back').forEach((m) => m.remove());
-    if (parts[0] !== 'lesson' && parts[0] !== 'weekly' && parts[0] !== 'review') stopTimer();
-    if (!(parts[0] === 'exam' && parts[2] === 'test')) exam = null;
+    if (!['lesson', 'weekly', 'review', 'extra', 'relearn'].includes(parts[0])) stopTimer();
     document.body.classList.remove('in-lesson', 'logged-out');
     window.scrollTo(0, 0);
 
+    if (parts[0] === 'teacher') { renderTeacher(); return; }
     if (!user) { stopTimer(); renderLogin(); return; }
     switch (parts[0]) {
       case 'lesson': startLesson('lesson'); break;
+      case 'extra': startLesson('extra'); break;
+      case 'relearn': startLesson('relearn'); break;
       case 'weekly': startLesson('weekly'); break;
       case 'review': startLesson('review'); break;
+      case 'level': startTest('level'); break;
+      case 'test': startTest('exam'); break;
       case 'list': renderList(); break;
       case 'records': renderRecords(); break;
-      case 'exam':
-        if (parts[1] && parts[2] === 'test') startExam(parts[1], parts[3] || '20');
-        else if (parts[1]) renderExamGrade(parts[1]);
-        else renderExamHome();
-        break;
+      case 'exam': renderExamHome(); break;
       case 'settings': renderSettings(); break;
       default: renderHome();
     }

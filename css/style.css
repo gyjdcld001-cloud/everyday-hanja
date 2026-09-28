@@ -499,3 +499,49 @@ ol.plain li { margin: 4px 0; }
   .stage { font-size: 19px; }
   .stage-sub { font-size: 13px; }
 }
+
+/* ---------- 입장: 탭 전환 ---------- */
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 18px; padding: 4px; border-radius: 16px; background: var(--bg); }
+.seg button { border: 0; background: none; padding: 10px; border-radius: 12px; cursor: pointer; font-family: var(--fun); font-size: 17px; color: var(--ink-soft); }
+.seg button.on { background: var(--paper); color: var(--accent-dark); box-shadow: 0 2px 0 var(--line); }
+.login label { display: block; margin-top: 12px; }
+
+/* ---------- 급수 여정 ---------- */
+.journey { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 4px 0; margin: 4px 0 14px; }
+.journey i { width: 12px; height: 3px; background: var(--line); }
+.jn {
+  font-family: var(--fun); font-size: 14px; padding: 4px 10px; border-radius: 999px;
+  background: var(--paper); border: 2px solid var(--line); color: var(--ink-soft);
+}
+.jn.done { background: var(--green); border-color: var(--green); color: #fff; }
+.jn.now { background: var(--accent); border-color: var(--accent); color: #fff; transform: scale(1.08); }
+.phase-ico { font-size: 56px; line-height: 1.2; }
+.phase-level { background: var(--s3-soft); border-color: color-mix(in srgb, var(--s3) 30%, transparent); }
+.phase-exam { background: var(--sw-soft); border-color: color-mix(in srgb, var(--sw) 40%, transparent); }
+.phase-relearn { background: var(--s1-soft); border-color: color-mix(in srgb, var(--s1) 30%, transparent); }
+.progress.two { display: flex; }
+.progress.two > span { border-radius: 0; }
+.progress.two > span.k { background: var(--blue); }
+
+/* ---------- 레벨테스트·급수 시험 ---------- */
+.test-hanja {
+  font-family: var(--hanja); font-size: 104px; line-height: 1.1; width: 150px; height: 150px; margin: 0 auto 10px;
+  display: grid; place-items: center; border-radius: 32px; background: var(--bg);
+}
+.test-words { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 6px 10px; font-size: 26px; }
+.tw { display: inline-flex; align-items: baseline; gap: 2px; padding: 4px 12px; border-radius: 14px; background: var(--s2-soft); }
+.tw .hanja em { font-style: normal; color: var(--accent-dark); }
+.tw small { font-size: 17px; color: var(--ink-soft); }
+.tw-dot { color: var(--ink-soft); }
+.wl-body { flex: 1; }
+.cell-btn.known { border-color: var(--blue); background: var(--blue-soft); }
+.cell-btn.known .hanja { color: var(--blue); }
+.grade-item.now { border-color: var(--accent); }
+.grade-item .ginfo .pill { margin-bottom: 2px; }
+
+/* ---------- 설정·선생님 ---------- */
+.pw-form { align-items: flex-end; }
+.pw-form .text-input { font-size: 16px; padding: 10px 12px; }
+.class-table tr.detail td { text-align: left; white-space: normal; background: var(--bg); border-radius: 12px; font-size: 14px; }
+.class-table .btn { min-height: 40px; font-size: 15px; padding: 6px 12px; }
+.class-table .linkbtn { font-weight: 700; text-decoration: none; padding: 0; }
