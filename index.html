@@ -14,7 +14,10 @@
 <body>
   <header class="topbar">
     <a href="#/" class="brand"><span class="brand-mark">漢</span> 매일 한자</a>
-    <span class="today" id="today-label"></span>
+    <span class="top-right">
+      <button class="who" id="who" hidden></button>
+      <span class="today" id="today-label"></span>
+    </span>
   </header>
 
   <main id="app" tabindex="-1"></main>
@@ -23,10 +26,12 @@
     <a href="#/" data-tab="home"><span class="tab-ico">☀</span>오늘</a>
     <a href="#/list" data-tab="list"><span class="tab-ico">字</span>한자 목록</a>
     <a href="#/exam" data-tab="exam"><span class="tab-ico">✎</span>급수 시험</a>
+    <a href="#/records" data-tab="records"><span class="tab-ico">記</span>학습 기록</a>
     <a href="#/settings" data-tab="settings"><span class="tab-ico">⚙</span>설정</a>
   </nav>
 
   <script src="js/data.js"></script>
+  <script src="js/hunum.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

@@ -2,16 +2,22 @@
  * 매일 한자 — 평일 아침 5분 한자 학습
  *
  * 학습 흐름 (에빙하우스 망각 곡선에 맞춘 반복)
- *   월~금: ① 1일 후 복습(지난 학습일의 한자 + 틀렸던 한자)  ② 오늘의 한자  ③ 확인 퀴즈
- *   금요일: 위 과정 + ④ 이번 주 한자 전체 복습(일주일 복습)
+ *   월~금: ① 1일 후 복습(지난 학습일의 한자 + 틀렸던 한자)
+ *          ② 오늘의 한자 + 활용 어휘 뜻 연결하기
+ *          ③ 짧은 글짓기
+ *          ④ 확인 퀴즈(음훈 쓰기, 활용 어휘가 아닌 것 고르기) → 풀이
+ *   금요일: 위 과정 + ⑤ 이번 주 한자 전체 복습(일주일 복습)
  *   급수 완료: '급수 시험' 코너에서 전체 복습 → 시험(어휘 제시, 뜻과 음 쓰기)
  *
- * 저장: 브라우저 localStorage (서버 없음)
+ * 저장: 브라우저 localStorage (서버 없음). 이름(아이디)별로 따로 저장합니다.
  */
 (() => {
   'use strict';
 
-  const STORE_KEY = 'everyday-hanja:v1';
+  const USERS_KEY = 'everyday-hanja:users';
+  const CURRENT_KEY = 'everyday-hanja:current';
+  const LEGACY_KEY = 'everyday-hanja:v1';
+  const stateKey = (name) => `everyday-hanja:v2:${name}`;
   const DAY = ['일', '월', '화', '수', '목', '금', '토'];
   const PASS_SCORE = 70; // 한자능력검정시험 합격 기준(70%)과 같게
   const MAX_EXTRA_REVIEW = 2; // 매일 복습에 더하는 '틀린 한자' 최대 개수
@@ -45,34 +51,77 @@
   }
   const isWeekday = (d) => d.getDay() >= 1 && d.getDay() <= 5;
   const koDate = (d) => `${d.getMonth() + 1}월 ${d.getDate()}일 ${DAY[d.getDay()]}요일`;
+  const shortDate = (ds) => { const d = parseDate(ds); return `${d.getMonth() + 1}/${d.getDate()}(${DAY[d.getDay()]})`; };
 
-  /* ================= 저장 ================= */
+  /* ================= 저장 (학생별) ================= */
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 무시 */ } }
+  function lsDel(k) { try { localStorage.removeItem(k); } catch (e) { /* 무시 */ } }
+
   function blankState() {
     return {
       pointer: 0,      // 다음에 배울 한자를 찾기 시작하는 위치
       learned: {},     // idx -> 배운 날짜
       order: [],       // 배운 순서
-      log: {},         // 날짜 -> { newIdx, reviews, week, done }
+      log: {},         // 날짜 -> { newIdx, reviews, week, done, quiz }
       missed: [],      // 틀린 한자(다음 복습에 다시 나옴)
       weekly: {},      // 월요일 날짜 -> 주간 복습 완료
       exams: {},       // 급수 id -> { best, last, passed, date }
+      activity: [],    // 학습 활동 누적 기록
+      writings: [],    // 짧은 글짓기 { date, idx, text }
       unlockAll: false,
     };
   }
-  function load() {
+  function users() {
+    try { return JSON.parse(lsGet(USERS_KEY)) || []; } catch (e) { return []; }
+  }
+  function loadState(name) {
     try {
-      const raw = localStorage.getItem(STORE_KEY);
+      const raw = lsGet(stateKey(name));
       if (raw) return Object.assign(blankState(), JSON.parse(raw));
-    } catch (e) { /* 저장소를 쓸 수 없으면 새로 시작 */ }
+    } catch (e) { /* 새로 시작 */ }
     return blankState();
   }
-  let S = load();
+  let user = lsGet(CURRENT_KEY);
+  if (user && !users().includes(user)) user = null;
+  let S = user ? loadState(user) : blankState();
   function save() {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) { /* 무시 */ }
+    if (user) lsSet(stateKey(user), JSON.stringify(S));
+  }
+  function login(name) {
+    const list = users();
+    if (!list.includes(name)) {
+      list.push(name);
+      lsSet(USERS_KEY, JSON.stringify(list));
+      // 이름 기능이 생기기 전의 기록이 있으면 첫 학생에게 옮겨 줍니다.
+      const legacy = lsGet(LEGACY_KEY);
+      if (legacy && list.length === 1) {
+        lsSet(stateKey(name), legacy);
+        lsDel(LEGACY_KEY);
+      }
+    }
+    user = name;
+    lsSet(CURRENT_KEY, name);
+    S = loadState(name);
+    session = null;
+    exam = null;
+    listGrade = null;
+  }
+  function logout() {
+    user = null;
+    lsDel(CURRENT_KEY);
+    S = blankState();
+    session = null;
+    exam = null;
+  }
+  function logActivity(a) {
+    S.activity.push(Object.assign({ date: fmt(today()) }, a));
   }
 
   /* ================= 한자 도우미 ================= */
   const C = (i) => HANJA[i];
+  const BY_CHAR = {};
+  HANJA.forEach((c) => { BY_CHAR[c.h] = c; });
   const gradeOf = (c) => GRADES[c.gradeIdx];
   function hunum(c) {
     if (c.meanings.length === c.sounds.length) {
@@ -81,9 +130,6 @@
     return `${c.meanings.join(', ')} ${c.sounds.join(', ')}`;
   }
   const hl = (text, h) => text.split(h).join(`<em>${h}</em>`);
-  function exampleHtml(c) {
-    return c.ex.replace(/\(([^)]+)\)/, (_, w) => `(<span class="hj">${hl(w, c.h)}</span>)`);
-  }
   const shuffle = (a) => {
     const x = a.slice();
     for (let i = x.length - 1; i > 0; i--) {
@@ -94,6 +140,42 @@
   };
   const pick = (a) => a[Math.floor(Math.random() * a.length)];
   const esc = (t) => String(t).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
+  // 어휘 속 한 글자의 음훈. 어휘에서 실제로 읽는 소리(두음 법칙 포함)에 맞춰 고릅니다.
+  function charHunum(ch, syl) {
+    let pairs;
+    const c = BY_CHAR[ch];
+    if (c) {
+      if (c.meanings.length === c.sounds.length) pairs = c.meanings.map((m, i) => [m, c.sounds[i]]);
+      else pairs = c.sounds.map((s) => [c.meanings.join('·'), s]);
+    } else if (EXTRA_HUNUM[ch]) {
+      pairs = EXTRA_HUNUM[ch].split('|').map((p) => {
+        const k = p.lastIndexOf(' ');
+        return [p.slice(0, k), p.slice(k + 1)];
+      });
+    } else {
+      return { m: '', s: syl || '' };
+    }
+    for (const [m, s] of pairs) {
+      if (syl === s) return { m, s };
+      if (syl && syl === dueum(s)) return { m, s: syl };
+    }
+    return { m: pairs[0][0], s: pairs[0][1] };
+  }
+  function wordParts(w) {
+    const read = w.read.replace(/\s/g, '');
+    return [...w.word].map((ch, k) => Object.assign({ ch }, charHunum(ch, read[k])));
+  }
+  // 어휘 한자 + 각 글자 아래 작은 음훈
+  function wordCharsHtml(w, target, showHunum = true) {
+    return `<div class="wchars">${wordParts(w).map((p) => `
+      <span class="wc${p.ch === target ? ' on' : ''}"><b class="hanja">${p.ch}</b>${showHunum ? `<small>${p.m} ${p.s}</small>` : ''}</span>`).join('')}</div>`;
+  }
+  const partsText = (w) => wordParts(w).map((p) => `${p.ch}(${p.m} ${p.s})`).join(' + ');
+
+  function exampleHtml(c) {
+    return c.ex.replace(/\(([^)]+)\)/, (_, w) => `(<span class="hj">${hl(w, c.h)}</span>)`);
+  }
 
   function nextNewIdx() {
     for (let i = S.pointer; i < HANJA.length; i++) if (!S.learned[i]) return i;
@@ -115,21 +197,21 @@
     const days = weekDates(d);
     return S.order.filter((i) => S.learned[i] >= days[0] && S.learned[i] <= days[4]);
   }
-  function gradeLearnedCount(g) {
+  function gradeLearnedCount(g, st = S) {
     let n = 0;
-    for (let i = g.start; i < g.end; i++) if (S.learned[i]) n++;
+    for (let i = g.start; i < g.end; i++) if (st.learned[i]) n++;
     return n;
   }
   const gradeComplete = (g) => gradeLearnedCount(g) === g.end - g.start;
   const examOpen = (g) => S.unlockAll || gradeComplete(g);
 
-  function streak() {
+  function streak(st = S) {
     let d = today();
     let n = 0;
-    if (!(S.log[fmt(d)] && S.log[fmt(d)].done)) d = addDays(d, -1);
+    if (!(st.log[fmt(d)] && st.log[fmt(d)].done)) d = addDays(d, -1);
     for (let guard = 0; guard < 4000; guard++) {
       if (isWeekday(d)) {
-        const e = S.log[fmt(d)];
+        const e = st.log[fmt(d)];
         if (e && e.done) n++;
         else break;
       }
@@ -191,6 +273,7 @@
   }
 
   /* ================= 문제 만들기 ================= */
+  // 복습용: 한자를 보고 음훈 고르기
   function hunumQuestion(i, stage) {
     const c = C(i);
     const answer = hunum(c);
@@ -207,18 +290,35 @@
     }
     return { kind: 'q', type: 'hunum', idx: i, stage, options: shuffle(opts), answer };
   }
-  const ALL_WORDS = HANJA.flatMap((c) => c.words.map((w) => w.read));
+  // 복습용: 어휘 읽기 고르기
+  const ALL_WORDS = HANJA.flatMap((c) => c.words.map((w) => ({ ...w, owner: c.idx })));
   function wordQuestion(i, stage) {
     const c = C(i);
     const w = pick(c.words);
     const len = norm(w.read).length;
-    const pool = shuffle(ALL_WORDS.filter((r) => norm(r).length === len && r !== w.read));
+    const pool = shuffle(ALL_WORDS.map((x) => x.read).filter((r) => norm(r).length === len && r !== w.read));
     const opts = [w.read];
     for (const r of pool) {
       if (!opts.includes(r)) opts.push(r);
       if (opts.length === 4) break;
     }
     return { kind: 'q', type: 'word', idx: i, stage, word: w, options: shuffle(opts), answer: w.read };
+  }
+  // 확인 퀴즈 1: 어휘를 보고 오늘 배운 한자의 음훈 쓰기
+  function writeHunumQuestion(i, stage) {
+    return { kind: 'qWrite', idx: i, stage, word: pick(C(i).words), m: '', s: '' };
+  }
+  // 확인 퀴즈 2: 오늘의 한자를 활용한 어휘가 아닌 것 고르기
+  // 오답(정답 보기)은 되도록 '소리는 같지만 다른 한자'가 쓰인 어휘로 고릅니다. (예: 校 ↔ 敎室)
+  function oddOneQuestion(i, stage) {
+    const c = C(i);
+    const sounds = new Set(c.sounds.flatMap((s) => [s, dueum(s)]));
+    const ownWords = new Set(c.words.map((w) => w.word));
+    const candidates = ALL_WORDS.filter((w) => !w.word.includes(c.h) && !ownWords.has(w.word));
+    const sameSound = candidates.filter((w) => [...w.read.replace(/\s/g, '')].some((ch) => sounds.has(ch)));
+    const odd = pick(sameSound.length ? sameSound : candidates);
+    const options = shuffle(shuffle(c.words).slice(0, 3).concat([odd]));
+    return { kind: 'qOdd', idx: i, stage, options, odd: odd.word, chosen: null };
   }
 
   /* ================= 학습 세션 ================= */
@@ -256,12 +356,16 @@
       if (k === 0) steps.push(wordQuestion(i, stage));
     });
     if (plan.newIdx !== null) {
-      steps.push({ kind: 'learn', idx: plan.newIdx, stage: '② 오늘의 한자' });
-      steps.push(hunumQuestion(plan.newIdx, '③ 확인 퀴즈'));
-      steps.push(wordQuestion(plan.newIdx, '③ 확인 퀴즈'));
+      const i = plan.newIdx;
+      steps.push({ kind: 'learn', idx: i, stage: '② 오늘의 한자' });
+      steps.push({ kind: 'match', idx: i, stage: '② 활용 어휘 뜻 연결하기', order: shuffle(C(i).words.map((_, k) => k)), done: [], sel: 0 });
+      steps.push({ kind: 'write', idx: i, stage: '③ 짧은 글짓기', text: '' });
+      steps.push(writeHunumQuestion(i, '④ 확인 퀴즈 1/2'));
+      steps.push(oddOneQuestion(i, '④ 확인 퀴즈 2/2'));
+      steps.push({ kind: 'explain', idx: i, stage: '④ 확인 퀴즈 풀이' });
     }
     if (plan.week.length) {
-      const stage = '④ 금요일 일주일 복습';
+      const stage = '⑤ 금요일 일주일 복습';
       steps.push({ kind: 'weekIntro', list: plan.week, stage });
       plan.week.filter((i) => i !== plan.newIdx).forEach((i) => steps.push(hunumQuestion(i, stage)));
       shuffle(plan.week).slice(0, 2).forEach((i) => steps.push(wordQuestion(i, stage)));
@@ -284,9 +388,8 @@
   }
 
   function buildFreeReview() {
-    const learned = S.order.slice();
     const missed = S.missed.filter((i) => S.learned[i]);
-    const rest = shuffle(learned.filter((i) => !missed.includes(i)));
+    const rest = shuffle(S.order.filter((i) => !missed.includes(i)));
     const list = shuffle(missed).concat(rest).slice(0, 5);
     const stage = '자유 복습';
     const steps = [];
@@ -307,13 +410,19 @@
   }
 
   function finishSession() {
+    const quiz = { correct: session.correct, total: session.total };
     if (session.type === 'lesson') {
       const e = S.log[session.date] || Object.assign({}, session.plan);
       e.done = true;
+      e.quiz = quiz;
       S.log[session.date] = e;
       if (session.plan.week.length) S.weekly[fmt(mondayOf(parseDate(session.date)))] = true;
+      logActivity({ type: 'lesson', idx: session.plan.newIdx, week: session.plan.week.length > 0, ...quiz });
     } else if (session.type === 'weekly') {
       S.weekly[session.week] = true;
+      logActivity({ type: 'weekly', ...quiz });
+    } else {
+      logActivity({ type: 'review', ...quiz });
     }
     save();
   }
@@ -326,39 +435,32 @@
     if (timerId) clearInterval(timerId);
     timerId = null;
   }
-  const canSpeak = 'speechSynthesis' in window;
-  function speak(text) {
-    if (!canSpeak) return;
-    try {
-      speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = 'ko-KR';
-      u.rate = 0.85;
-      speechSynthesis.speak(u);
-    } catch (e) { /* 무시 */ }
-  }
+  // 학습 카드(목록·복습에서 보는 완성된 모습)
   function charCardHtml(c, opts = {}) {
     const words = c.words.map((w) => `
       <div class="word">
-        <div class="word-h">${hl(w.word, c.h)}</div>
+        ${wordCharsHtml(w, c.h)}
         <div class="word-r">${w.read}</div>
         <div class="word-m">${w.mean}</div>
       </div>`).join('');
     return `
+      ${charHeadHtml(c, opts.stage)}
+      <h3 style="margin-top:20px">활용 어휘</h3>
+      <div class="words">${words}</div>
+      <div class="ex"><span class="lbl">문장으로 익히기</span>${exampleHtml(c)}</div>`;
+  }
+  function charHeadHtml(c, stage) {
+    return `
       <div class="char-card">
-        ${opts.stage ? `<div class="stage-label">${opts.stage}</div>` : ''}
+        ${stage ? `<div class="stage-label">${stage}</div>` : ''}
         <span class="pill">${c.gradeName}</span>
         <div class="big-hanja">${c.h}</div>
         <div class="hunum">${hunum(c)}</div>
         <div class="small muted">뜻(훈) + 소리(음)</div>
-        ${canSpeak ? `<button class="speak" data-speak="${c.meanings[0]} ${c.sounds[0]}">🔊 소리 듣기</button>` : ''}
-      </div>
-      <h3 style="margin-top:20px">이 한자가 들어간 어휘</h3>
-      <div class="words">${words}</div>
-      <div class="ex"><span class="lbl">문장으로 익히기</span>${exampleHtml(c)}</div>`;
+      </div>`;
   }
-  function bindSpeak(root = $app) {
-    root.querySelectorAll('[data-speak]').forEach((b) => b.addEventListener('click', () => speak(b.dataset.speak)));
+  function bindOpen(root = $app) {
+    root.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => openCharModal(+b.dataset.open)));
   }
   function openCharModal(i) {
     const c = C(i);
@@ -371,7 +473,36 @@
     back.addEventListener('click', (e) => { if (e.target === back) close(); });
     back.querySelector('.close-x').addEventListener('click', close);
     document.body.appendChild(back);
-    bindSpeak(back);
+  }
+
+  /* ================= 화면: 입장 ================= */
+  function renderLogin() {
+    document.body.classList.add('logged-out');
+    const list = users();
+    $app.innerHTML = `
+      <div class="card hero">
+        <div class="big-hanja">漢</div>
+        <h2>매일 한자</h2>
+        <p class="muted">평일 아침 5분, 하루 한 자씩 뜻과 음을 익혀요.</p>
+        <form id="login" autocomplete="off" style="margin-top:16px;text-align:left">
+          <label for="name" class="small muted">이름(아이디)</label>
+          <input id="name" class="text-input" maxlength="20" placeholder="예) 3학년 2반 김하늘" required>
+          <button class="btn block" style="margin-top:12px">입장하기</button>
+        </form>
+      </div>
+      ${list.length ? `<div class="card">
+        <h3>이 기기에서 공부한 학생</h3>
+        <p class="small muted">내 이름을 누르면 지금까지의 학습 기록을 이어서 할 수 있어요.</p>
+        <div class="name-list">${list.map((n) => `<button class="btn soft" data-name="${esc(n)}">${esc(n)}</button>`).join('')}</div>
+      </div>` : ''}
+      <p class="small muted center">학습 기록은 이 기기(브라우저)에 이름별로 저장돼요.</p>`;
+    const enter = (n) => { login(n); location.hash = '#/'; route(); };
+    document.getElementById('login').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const n = document.getElementById('name').value.trim().replace(/\s+/g, ' ');
+      if (n) enter(n);
+    });
+    $app.querySelectorAll('[data-name]').forEach((b) => b.addEventListener('click', () => enter(b.dataset.name)));
   }
 
   /* ================= 화면: 홈 ================= */
@@ -387,11 +518,11 @@
     if (!learnedN && !entry) {
       main += `
       <div class="card">
-        <h2>반가워요! 👋</h2>
+        <h2>반가워요, ${esc(user)}! 👋</h2>
         <p>평일 아침 <b>5분</b>, 하루에 한자 <b>한 자</b>씩 뜻과 음을 익혀요.<br>
         글자 모양을 외울 필요는 없어요. 어휘와 문장 속에서 뜻과 소리를 알아보면 돼요.</p>
         <ol class="plain small">
-          <li><b>월~금</b> 매일 새 한자 1자 + 어휘 4개 + 예문</li>
+          <li><b>월~금</b> 매일 새 한자 1자, 활용 어휘의 뜻 연결하기, 짧은 글짓기</li>
           <li>다음 날 <b>1일 후 복습</b>으로 한 번 더</li>
           <li><b>금요일</b>엔 한 주의 한자를 모두 <b>일주일 복습</b></li>
           <li>급수를 다 배우면 <b>급수 시험</b>으로 마무리</li>
@@ -431,8 +562,9 @@
           steps.push(`<b>1일 후 복습</b> — <span class="hanja">${C(first).h}</span>`
             + (extra.length ? ` · 틀렸던 한자 ${extra.map((i) => `<span class="hanja">${C(i).h}</span>`).join(' ')}` : ''));
         }
-        steps.push(`<b>오늘의 한자</b> — 뜻과 음, 어휘 4개, 예문`);
-        steps.push(`<b>확인 퀴즈</b> — 2문제`);
+        steps.push('<b>오늘의 한자</b> — 음훈 익히고 활용 어휘 4개의 뜻 연결하기');
+        steps.push('<b>짧은 글짓기</b> — 배운 낱말을 넣어 한 문장');
+        steps.push('<b>확인 퀴즈</b> — 음훈 쓰기, 활용 어휘가 아닌 것 고르기, 풀이');
         if (plan.week.length) steps.push(`<b>일주일 복습</b> — 이번 주 ${plan.week.length}자`);
         main += `
         <div class="card hero">
@@ -492,14 +624,14 @@
         <div class="stats">
           <div><b>${streak()}</b><span>연속 학습일</span></div>
           <div><b>${learnedN}</b><span>배운 한자</span></div>
-          <div><b>${S.missed.length}</b><span>다시 볼 한자</span></div>
+          <div><b>${S.writings.length}</b><span>글짓기</span></div>
         </div>
         <div class="row" style="margin-top:16px"><b>${cur.name}</b><span class="spacer"></span><span class="small muted">${curN} / ${curT}자</span></div>
         <div class="progress" style="margin-top:6px"><span style="width:${(curN / curT) * 100}%"></span></div>
       </div>`;
 
     $app.innerHTML = main;
-    $app.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => openCharModal(+b.dataset.open)));
+    bindOpen();
   }
 
   /* ================= 화면: 학습 세션 ================= */
@@ -521,8 +653,7 @@
     stopTimer();
     timerId = setInterval(() => {
       const el = document.getElementById('timer');
-      if (!el || !session) return;
-      el.textContent = elapsed(session.started);
+      if (el && session) el.textContent = elapsed(session.started);
     }, 1000);
   }
 
@@ -546,32 +677,262 @@
         <div class="progress"><span style="width:${pct}%"></span></div>
         <span class="timer" id="timer">${elapsed(session.started)}</span>
       </div>`;
-    let body = '';
-    if (step.kind === 'learn') body = renderLearn(step);
-    else if (step.kind === 'q') body = renderQuestion(step);
-    else if (step.kind === 'weekIntro') body = renderWeekIntro(step);
-    else if (step.kind === 'weekSummary') body = renderWeekSummary(step);
-    else if (step.kind === 'done') body = renderDone();
-    $app.innerHTML = head + body;
+    const R = {
+      learn: renderLearn, match: renderMatch, write: renderWrite, q: renderQuestion,
+      qWrite: renderWriteQuiz, qOdd: renderOddQuiz, explain: renderExplain,
+      weekIntro: renderWeekIntro, weekSummary: renderWeekSummary, done: renderDone,
+    };
+    $app.innerHTML = head + R[step.kind](step);
 
     const quit = document.getElementById('quit');
     if (quit) quit.addEventListener('click', () => { location.hash = '#/'; });
-    bindSpeak();
-    if (step.kind === 'learn') {
-      document.getElementById('next').addEventListener('click', () => { commitLearn(step.idx); nextStep(); });
-    } else if (step.kind === 'q') {
-      bindQuestion(step);
-    } else if (step.kind === 'weekIntro' || step.kind === 'weekSummary') {
-      document.getElementById('next').addEventListener('click', nextStep);
-      $app.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => openCharModal(+b.dataset.open)));
-    }
+    const B = {
+      learn: () => document.getElementById('next').addEventListener('click', () => { commitLearn(step.idx); nextStep(); }),
+      match: bindMatch, write: bindWrite, q: bindQuestion, qWrite: bindWriteQuiz, qOdd: bindOddQuiz,
+      explain: () => document.getElementById('next').addEventListener('click', nextStep),
+      weekIntro: () => document.getElementById('next').addEventListener('click', nextStep),
+      weekSummary: () => document.getElementById('next').addEventListener('click', nextStep),
+    };
+    if (B[step.kind]) B[step.kind](step);
+    bindOpen();
   }
 
+  // ② 오늘의 한자
   function renderLearn(step) {
-    return `<div class="card">${charCardHtml(C(step.idx), { stage: step.stage })}
-      <button class="btn block" id="next" style="margin-top:18px">다 익혔어요 →</button></div>`;
+    return `<div class="card">${charHeadHtml(C(step.idx), step.stage)}
+      <p class="center small muted" style="margin-top:14px">이제 이 한자가 들어간 <b>활용 어휘</b>의 뜻을 알아볼 거예요.</p>
+      <button class="btn block" id="next" style="margin-top:6px">활용 어휘 보러 가기 →</button></div>`;
   }
 
+  // ② 활용 어휘 뜻 연결하기: 한자별 음훈을 보고 어휘의 뜻을 짐작해 연결합니다.
+  function renderMatch(step) {
+    const c = C(step.idx);
+    const all = step.done.length === c.words.length;
+    const rows = c.words.map((w, k) => {
+      const ok = step.done.includes(k);
+      return `<button class="match-word${ok ? ' ok' : ''}${!ok && step.sel === k ? ' sel' : ''}" data-w="${k}" ${ok ? 'disabled' : ''}>
+        ${wordCharsHtml(w, c.h)}
+        <div class="mw-body">
+          <div class="word-r">${w.read}</div>
+          <div class="mw-mean">${ok ? `<span class="small muted">${partsText(w)}</span><br>→ <b>${w.mean}</b>` : '<span class="blank">뜻을 골라 연결해요</span>'}</div>
+        </div>
+      </button>`;
+    }).join('');
+    const means = step.order.filter((k) => !step.done.includes(k))
+      .map((k) => `<button class="opt mean-opt" data-m="${k}">${c.words[k].mean}</button>`).join('');
+    return `<div class="card">
+      <div class="stage-label">${step.stage}</div>
+      <div class="row"><h3 style="margin:0">활용 어휘</h3><span class="spacer"></span>
+        <span class="pill">${c.h} ${hunum(c)}</span></div>
+      <p class="small muted" style="margin:6px 0 12px">${all ? '모두 연결했어요! 한자의 음훈이 어휘의 뜻과 어떻게 이어지는지 살펴보세요.'
+        : '① 어휘를 고르고 ② 한자 아래 <b>음훈</b>을 힌트로 알맞은 <b>뜻</b>을 눌러 연결해요.'}</p>
+      <div class="match-list">${rows}</div>
+      ${all ? `<div class="ex"><span class="lbl">문장으로 익히기</span>${exampleHtml(c)}</div>
+        <button class="btn block" id="next" style="margin-top:16px">짧은 글짓기 →</button>`
+        : `<div class="stage-label" style="margin-top:16px">뜻 고르기</div><div class="options">${means}</div><div id="fb"></div>`}
+    </div>`;
+  }
+  function bindMatch(step) {
+    const c = C(step.idx);
+    if (step.done.length === c.words.length) {
+      document.getElementById('next').addEventListener('click', nextStep);
+      return;
+    }
+    $app.querySelectorAll('[data-w]').forEach((b) => b.addEventListener('click', () => { step.sel = +b.dataset.w; renderStep(); }));
+    $app.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => {
+      const k = +b.dataset.m;
+      if (k === step.sel) {
+        step.done.push(k);
+        const left = c.words.map((_, j) => j).filter((j) => !step.done.includes(j));
+        step.sel = left.length ? left[0] : -1;
+        renderStep();
+      } else {
+        b.classList.add('wrong');
+        const w = c.words[step.sel];
+        document.getElementById('fb').innerHTML = `<div class="feedback no">다시 생각해 봐요. <span class="hanja">${w.word}</span> = ${partsText(w)}</div>`;
+        setTimeout(() => b.classList.remove('wrong'), 600);
+      }
+    }));
+  }
+
+  // ③ 짧은 글짓기
+  function usedWord(c, text) {
+    const t = text.replace(/\s/g, '');
+    return c.words.find((w) => t.includes(w.read.replace(/\s/g, '')) || t.includes(w.word)) || null;
+  }
+  function renderWrite(step) {
+    const c = C(step.idx);
+    const chips = c.words.map((w) => `<button type="button" class="chip" data-read="${w.read}"><span class="hanja">${hl(w.word, c.h)}</span> ${w.read}</button>`).join('');
+    return `<div class="card">
+      <div class="stage-label">${step.stage}</div>
+      <h3>배운 낱말을 넣어 짧은 글을 지어 보세요</h3>
+      <p class="small muted">아래 낱말 가운데 하나 이상을 넣어 한 문장을 써요. 낱말을 누르면 글에 들어가요.</p>
+      <div class="chips">${chips}</div>
+      <div class="ex" style="margin-top:12px"><span class="lbl">보기</span>${exampleHtml(c)}</div>
+      <textarea id="text" class="text-input" rows="3" maxlength="200" placeholder="예) 우리 ${c.words[0].read}은(는) …">${esc(step.text)}</textarea>
+      <div id="fb"></div>
+      <button class="btn block" id="save" style="margin-top:12px">글 저장하고 확인 퀴즈 →</button>
+    </div>`;
+  }
+  function bindWrite(step) {
+    const c = C(step.idx);
+    const ta = document.getElementById('text');
+    ta.addEventListener('input', () => { step.text = ta.value; });
+    $app.querySelectorAll('.chip').forEach((b) => b.addEventListener('click', () => {
+      const pos = ta.selectionStart ?? ta.value.length;
+      ta.value = ta.value.slice(0, pos) + b.dataset.read + ta.value.slice(ta.selectionEnd ?? pos);
+      step.text = ta.value;
+      ta.focus();
+    }));
+    document.getElementById('save').addEventListener('click', () => {
+      const text = ta.value.trim();
+      const fb = document.getElementById('fb');
+      if (text.length < 5) {
+        fb.innerHTML = '<div class="feedback no">조금 더 길게, 한 문장으로 써 보세요.</div>';
+        return;
+      }
+      const w = usedWord(c, text);
+      if (!w) {
+        fb.innerHTML = `<div class="feedback no">배운 낱말(${c.words.map((x) => x.read).join(', ')}) 가운데 하나를 넣어 써 보세요.</div>`;
+        return;
+      }
+      const ds = session.date;
+      S.writings = S.writings.filter((x) => !(x.date === ds && x.idx === step.idx));
+      S.writings.push({ date: ds, idx: step.idx, word: w.word, text });
+      save();
+      nextStep();
+    });
+  }
+
+  // ④ 확인 퀴즈 1: 어휘를 보고 음훈 쓰기 (풀이는 모두 푼 뒤에)
+  function renderWriteQuiz(step) {
+    const c = C(step.idx);
+    return `<div class="card">
+      <div class="stage-label">${step.stage}</div>
+      <div class="quiz-q">
+        <div class="qword">${hl(step.word.word, c.h)}</div>
+        <div class="prompt">색으로 표시된 한자의 <b>뜻(훈)</b>과 <b>음</b>을 쓰세요.</div>
+      </div>
+      <form id="f" autocomplete="off">
+        <div class="exam-inputs">
+          <div><label for="m">뜻 (훈)</label><input id="m" lang="ko" value="${esc(step.m)}"></div>
+          <div><label for="s">음 (소리)</label><input id="s" lang="ko" value="${esc(step.s)}"></div>
+        </div>
+        <div id="fb"></div>
+        <button class="btn block" style="margin-top:14px">다음 문제 →</button>
+      </form>
+      <p class="small muted center">풀이는 두 문제를 모두 푼 뒤에 볼 수 있어요.</p>
+    </div>`;
+  }
+  function bindWriteQuiz(step) {
+    const m = document.getElementById('m');
+    const s = document.getElementById('s');
+    m.focus();
+    document.getElementById('f').addEventListener('submit', (e) => {
+      e.preventDefault();
+      step.m = m.value.trim();
+      step.s = s.value.trim();
+      if (!step.m || !step.s) {
+        document.getElementById('fb').innerHTML = '<div class="feedback no">뜻과 음을 모두 써 주세요. 모르면 생각나는 대로 써도 괜찮아요.</div>';
+        (step.m ? s : m).focus();
+        return;
+      }
+      nextStep();
+    });
+  }
+
+  // ④ 확인 퀴즈 2: 활용 어휘가 아닌 것 고르기
+  function renderOddQuiz(step) {
+    const c = C(step.idx);
+    const opts = step.options.map((w, k) => `
+      <button class="opt odd-opt${step.chosen === w.word ? ' sel' : ''}" data-k="${k}">
+        <span class="hanja" style="font-size:26px">${w.word}</span> <span class="muted">${w.read}</span></button>`).join('');
+    return `<div class="card">
+      <div class="stage-label">${step.stage}</div>
+      <div class="quiz-q">
+        <div class="big-hanja" style="font-size:72px">${c.h}</div>
+        <div class="prompt">오늘의 한자 <b>${c.h}(${hunum(c)})</b>를 활용한 어휘가 <b style="color:var(--accent)">아닌</b> 것은?</div>
+      </div>
+      <div class="options">${opts}</div>
+      <p class="small muted center">소리가 같아도 한자가 다를 수 있어요. 한자를 잘 살펴보세요.</p>
+    </div>`;
+  }
+  function bindOddQuiz(step) {
+    $app.querySelectorAll('.odd-opt').forEach((b) => b.addEventListener('click', () => {
+      step.chosen = step.options[+b.dataset.k].word;
+      nextStep();
+    }));
+  }
+
+  // ④ 확인 퀴즈 풀이: 정답과 틀린 까닭
+  function renderExplain(step) {
+    const c = C(step.idx);
+    const q1 = session.steps.find((x) => x.kind === 'qWrite' && x.idx === step.idx);
+    const q2 = session.steps.find((x) => x.kind === 'qOdd' && x.idx === step.idx);
+    if (!step.graded) {
+      q1.okM = meaningOk(c, q1.m);
+      q1.okS = soundOk(c, q1.s);
+      q1.ok = q1.okM && q1.okS;
+      q2.ok = q2.chosen === q2.odd;
+      session.total += 2;
+      session.correct += (q1.ok ? 1 : 0) + (q2.ok ? 1 : 0);
+      if (q1.ok && q2.ok) removeMissed(step.idx); else addMissed(step.idx);
+      S.log[session.date] = Object.assign(S.log[session.date] || {}, { check: { q1: q1.ok, q2: q2.ok } });
+      save();
+      step.graded = true;
+    }
+
+    // 문제 1 풀이
+    const w = q1.word;
+    const parts = wordParts(w);
+    const tp = parts.find((p) => p.ch === c.h);
+    const reasons1 = [];
+    if (!q1.okM) reasons1.push(`뜻을 '<b>${esc(q1.m)}</b>'(이)라고 썼어요. ${c.h}의 뜻(훈)은 '<b>${c.meanings.join(', ')}</b>'이에요.`);
+    if (!q1.okS) reasons1.push(`음을 '<b>${esc(q1.s)}</b>'(이)라고 썼어요. ${c.h}의 소리(음)는 '<b>${c.sounds.join(', ')}</b>'이에요.`);
+    if (tp && !c.sounds.includes(tp.s)) reasons1.push(`'${w.read}'에서는 두음 법칙 때문에 '${tp.s}'(으)로 읽지만 본래 음은 '${c.sounds[0]}'이에요.`);
+    const ex1 = `
+      <div class="ex-item ${q1.ok ? 'ok' : 'no'}">
+        <div class="ex-head"><span class="mark">${q1.ok ? '○' : '✕'}</span> 1. <span class="hanja">${hl(w.word, c.h)}</span>의 <span class="hanja">${c.h}</span> 음훈 쓰기</div>
+        <div class="small">내 답: ${esc(q1.m)} ${esc(q1.s)} · 정답: <b>${hunum(c)}</b></div>
+        ${reasons1.length ? `<div class="why"><b>틀린 까닭</b> ${reasons1.join(' ')}</div>` : ''}
+        <div class="solve"><b>풀이</b> ${w.word}(${w.read}) = ${partsText(w)} → ${w.mean}</div>
+      </div>`;
+
+    // 문제 2 풀이
+    const oddW = q2.options.find((x) => x.word === q2.odd);
+    const oddParts = wordParts(oddW);
+    const sounds = new Set(c.sounds.flatMap((s) => [s, dueum(s)]));
+    const look = oddParts.find((p) => sounds.has(p.s));
+    const oddWhy = look
+      ? `'${oddW.read}'의 '${look.s}'은(는) ${look.ch}(${look.m} ${look.s})예요. 소리는 같아도 오늘 배운 ${c.h}(${hunum(c)})와 다른 한자예요.`
+      : `${oddW.word}(${oddW.read}) = ${partsText(oddW)}로, ${c.h}가 들어 있지 않아요.`;
+    let reason2 = '';
+    if (!q2.ok) {
+      const chosen = q2.options.find((x) => x.word === q2.chosen);
+      reason2 = `<div class="why"><b>틀린 까닭</b> 고른 ${chosen.word}(${chosen.read})에는 오늘의 한자 <b>${c.h}</b>가 들어 있어요.
+        ${chosen.word}(${chosen.read}) = ${partsText(chosen)} → ${chosen.mean}. 그래서 ${c.h}를 활용한 어휘가 맞아요.</div>`;
+    }
+    const others = q2.options.filter((x) => x.word !== q2.odd)
+      .map((x) => `<li><span class="hanja">${hl(x.word, c.h)}</span>(${x.read}) — ${x.mean}</li>`).join('');
+    const ex2 = `
+      <div class="ex-item ${q2.ok ? 'ok' : 'no'}">
+        <div class="ex-head"><span class="mark">${q2.ok ? '○' : '✕'}</span> 2. ${c.h}를 활용한 어휘가 아닌 것</div>
+        <div class="small">내 답: <span class="hanja">${q2.chosen}</span> · 정답: <b class="hanja">${q2.odd}</b>(${oddW.read})</div>
+        ${reason2}
+        <div class="solve"><b>풀이</b> ${oddWhy}<br>나머지는 모두 <span class="hanja">${c.h}</span>가 들어간 어휘예요.<ul class="plain-list">${others}</ul></div>
+      </div>`;
+
+    const right = (q1.ok ? 1 : 0) + (q2.ok ? 1 : 0);
+    return `<div class="card">
+      <div class="stage-label">${step.stage}</div>
+      <h2>${right === 2 ? '두 문제 모두 맞혔어요! 👍' : `2문제 중 ${right}문제를 맞혔어요`}</h2>
+      ${right < 2 ? '<p class="small muted">틀린 한자는 다음 복습에 다시 나와요.</p>' : ''}
+      ${ex1}${ex2}
+      <button class="btn block" id="next" style="margin-top:16px">다음 →</button>
+    </div>`;
+  }
+
+  // 복습용 객관식(즉시 채점)
   function renderQuestion(step) {
     const c = C(step.idx);
     let q;
@@ -600,17 +961,13 @@
       });
       if (!ok) b.classList.add('wrong');
       session.total++;
-      if (ok) session.correct++;
-      if (ok) removeMissed(step.idx);
-      else addMissed(step.idx);
+      if (ok) { session.correct++; removeMissed(step.idx); } else addMissed(step.idx);
       save();
-      const detail = step.type === 'hunum'
-        ? `<b class="hanja">${c.h}</b> ${hunum(c)} · 예) <span class="hanja">${c.words[0].word}</span>(${c.words[0].read})`
-        : `<span class="hanja">${step.word.word}</span>(${step.word.read}) — ${step.word.mean}<br><span class="hanja">${c.h}</span> ${hunum(c)}`;
+      const w = step.type === 'hunum' ? c.words[0] : step.word;
+      const detail = `<b class="hanja">${c.h}</b> ${hunum(c)}<br><span class="hanja">${w.word}</span>(${w.read}) = ${partsText(w)} → ${w.mean}`;
       document.getElementById('fb').innerHTML = `
         <div class="feedback ${ok ? 'ok' : 'no'}">${ok ? '정답이에요! 👍' : '아쉬워요. 다음 복습 때 다시 나올 거예요.'}<br>${detail}</div>
         <button class="btn block" id="next" style="margin-top:12px">다음 →</button>`;
-      if (canSpeak) speak(step.type === 'hunum' ? `${c.meanings[0]} ${c.sounds[0]}` : step.word.read);
       const nb = document.getElementById('next');
       nb.addEventListener('click', nextStep);
       nb.focus();
@@ -649,6 +1006,7 @@
     const mins = Math.max(1, Math.round(secs / 60));
     let extra = '';
     let title = '오늘 학습 끝!';
+    let writing = '';
     if (session.type === 'lesson') {
       const i = session.plan.newIdx;
       if (i !== null && i !== undefined) {
@@ -659,6 +1017,8 @@
             <p class="small muted">${g.name} ${g.end - g.start}자 전체를 복습하고 급수 시험을 볼 수 있어요.</p>
             <a class="btn ghost block" href="#/exam/${g.id}">급수 시험 보러 가기</a></div>`;
         }
+        const wr = S.writings.find((x) => x.date === session.date && x.idx === i);
+        if (wr) writing = `<div class="ex" style="text-align:left;margin:12px 0"><span class="lbl">오늘 지은 글</span>${esc(wr.text)}</div>`;
       }
       if (session.plan.week.length) title = '한 주 학습 끝! 🎉';
     } else if (session.type === 'weekly') {
@@ -673,6 +1033,7 @@
       <div class="emoji">🌱</div>
       <h2>${title}</h2>
       <p>${session.total ? `퀴즈 <b>${session.correct} / ${session.total}</b> 정답 · ` : ''}약 ${mins}분</p>
+      ${writing}
       <p class="muted">${msg}</p>
       ${session.type === 'lesson' ? `<p>연속 학습 <b>${streak()}일</b> 🔥</p>` : ''}
       <a class="btn block" href="#/">홈으로</a>
@@ -711,7 +1072,64 @@
       </div>
       <p class="small muted center">준비 중: ${UPCOMING_GRADES.join(' · ')}</p>`;
     $app.querySelectorAll('[data-g]').forEach((b) => b.addEventListener('click', () => { listGrade = +b.dataset.g; renderList(); }));
-    $app.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => openCharModal(+b.dataset.open)));
+    bindOpen();
+  }
+
+  /* ================= 화면: 학습 기록 ================= */
+  function renderRecords() {
+    setTab('records');
+    const lessons = S.activity.filter((a) => a.type === 'lesson');
+    const quizT = S.activity.reduce((n, a) => n + (a.total || 0), 0);
+    const quizC = S.activity.reduce((n, a) => n + (a.correct || 0), 0);
+    const byDate = {};
+    S.activity.forEach((a) => { (byDate[a.date] = byDate[a.date] || []).push(a); });
+    S.writings.forEach((w) => { (byDate[w.date] = byDate[w.date] || []).push({ type: 'writing', ...w }); });
+    const dates = Object.keys(byDate).sort().reverse();
+    const label = (a) => {
+      if (a.type === 'lesson') {
+        const c = a.idx !== null && a.idx !== undefined ? C(a.idx) : null;
+        return `📘 ${c ? `<button class="linkbtn hanja" data-open="${c.idx}">${c.h}</button> ${hunum(c)} 학습` : '복습'}${a.week ? ' · 일주일 복습' : ''} · 퀴즈 ${a.correct}/${a.total}`;
+      }
+      if (a.type === 'weekly') return `🗓 일주일 복습 · 퀴즈 ${a.correct}/${a.total}`;
+      if (a.type === 'review') return `🔁 자유 복습 · 퀴즈 ${a.correct}/${a.total}`;
+      if (a.type === 'exam') return `🎓 ${a.grade} 급수 시험 ${a.score}점 ${a.passed ? '(합격)' : ''}`;
+      if (a.type === 'writing') return `✏️ 글짓기: “${esc(a.text)}”`;
+      return '';
+    };
+    const timeline = dates.map((d) => `<div class="tl-day"><div class="tl-date">${shortDate(d)}</div>
+      <ul>${byDate[d].map((a) => `<li>${label(a)}</li>`).join('')}</ul></div>`).join('');
+
+    // 이 기기의 학생들(선생님용 한눈에 보기)
+    const rows = users().map((n) => {
+      const st = n === user ? S : loadState(n);
+      const last = st.activity.length ? st.activity[st.activity.length - 1].date : null;
+      const tq = st.activity.reduce((x, a) => x + (a.total || 0), 0);
+      const cq = st.activity.reduce((x, a) => x + (a.correct || 0), 0);
+      return `<tr${n === user ? ' class="me"' : ''}><td>${esc(n)}</td><td>${st.order.length}</td>
+        <td>${st.activity.filter((a) => a.type === 'lesson').length}</td><td>${st.writings.length}</td>
+        <td>${tq ? Math.round((cq / tq) * 100) + '%' : '-'}</td><td>${last ? shortDate(last) : '-'}</td></tr>`;
+    }).join('');
+
+    $app.innerHTML = `
+      <div class="card">
+        <h2>${esc(user)}의 학습 기록</h2>
+        <div class="stats" style="grid-template-columns:repeat(4,1fr)">
+          <div><b>${lessons.length}</b><span>학습한 날</span></div>
+          <div><b>${S.order.length}</b><span>배운 한자</span></div>
+          <div><b>${S.writings.length}</b><span>글짓기</span></div>
+          <div><b>${quizT ? Math.round((quizC / quizT) * 100) : 0}%</b><span>퀴즈 정답률</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>날짜별 활동</h3>
+        ${timeline || '<p class="muted small">아직 기록이 없어요. 오늘의 학습을 시작해 보세요!</p>'}
+      </div>
+      ${users().length > 1 ? `<div class="card">
+        <h3>이 기기의 학생들</h3>
+        <div style="overflow-x:auto"><table class="class-table">
+          <tr><th>이름</th><th>배운 한자</th><th>학습일</th><th>글짓기</th><th>정답률</th><th>최근</th></tr>${rows}</table></div>
+      </div>` : ''}`;
+    bindOpen();
   }
 
   /* ================= 화면: 급수 시험 ================= */
@@ -766,7 +1184,7 @@
       <div class="row" style="margin-bottom:10px"><a href="#/exam" class="small">← 급수 시험</a></div>
       <div class="card">
         <h2>${g.name} · ① 전체 복습</h2>
-        <p class="small muted">${total}자를 훑어보며 뜻과 음을 떠올려 보세요. 한자를 누르면 어휘와 예문이 보여요.</p>
+        <p class="small muted">${total}자를 훑어보며 뜻과 음을 떠올려 보세요. 한자를 누르면 활용 어휘와 예문이 보여요.</p>
         <label class="row small" style="margin:8px 0 12px"><input type="checkbox" class="switch" id="hide" ${hideHunum ? 'checked' : ''}> 뜻·음 가리고 스스로 떠올리기</label>
         <div class="grid">${cells}</div>
       </div>
@@ -781,7 +1199,7 @@
         </div>
       </div>`;
     document.getElementById('hide').addEventListener('change', (e) => { hideHunum = e.target.checked; renderExamGrade(id); });
-    $app.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => openCharModal(+b.dataset.open)));
+    bindOpen();
   }
 
   let exam = null;
@@ -863,7 +1281,7 @@
     document.getElementById('fb').innerHTML = `
       <div class="feedback ${ok ? 'ok' : 'no'}">
         ${ok ? '정답! 👍' : '정답은'} <b class="hanja">${c.h}</b> <b>${hunum(c)}</b><br>
-        <span class="hanja">${q.word.word}</span>(${q.word.read}) — ${q.word.mean}
+        <span class="hanja">${q.word.word}</span>(${q.word.read}) = ${partsText(q.word)} → ${q.word.mean}
       </div>${override}`;
     const go = document.getElementById('go');
     go.textContent = exam.i + 1 < exam.qs.length ? '다음 문제 →' : '결과 보기';
@@ -884,6 +1302,7 @@
         best: Math.max(rec.best, score), last: score, passed: rec.passed || passed, date: fmt(today()),
       };
       exam.qs.forEach((q) => { if (!(q.okM && q.okS)) addMissed(q.idx); else removeMissed(q.idx); });
+      logActivity({ type: 'exam', grade: g.name, score, passed, correct: right, total });
       save();
       exam.saved = true;
     }
@@ -906,7 +1325,7 @@
       ${wrong.length ? `<div class="card"><h3>틀린 한자 ${wrong.length}자</h3>
         <p class="small muted">틀린 한자는 '다시 볼 한자'에 담겨 매일 복습에 나와요.</p>
         <ul class="wrong-list">${list}</ul></div>` : ''}`;
-    $app.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => openCharModal(+b.dataset.open)));
+    bindOpen();
     exam = null;
   }
 
@@ -920,6 +1339,10 @@
       <div class="card">
         <h2>설정</h2>
         <div class="setting">
+          <div class="txt"><b>학생</b><div class="small muted">${esc(user)}</div></div>
+          <button class="btn ghost" id="switch">학생 바꾸기</button>
+        </div>
+        <div class="setting">
           <div class="txt"><b>다음에 배울 급수</b><div class="small muted">이미 아는 급수는 건너뛸 수 있어요.</div></div>
           <select id="grade">${options}</select>
         </div>
@@ -928,21 +1351,23 @@
           <input type="checkbox" class="switch" id="unlock" ${S.unlockAll ? 'checked' : ''}>
         </div>
         <div class="setting">
-          <div class="txt"><b>학습 기록 초기화</b><div class="small muted">배운 한자, 시험 기록이 모두 지워져요.</div></div>
+          <div class="txt"><b>학습 기록 초기화</b><div class="small muted">${esc(user)}의 배운 한자, 글짓기, 시험 기록이 모두 지워져요.</div></div>
           <button class="btn ghost" id="reset">초기화</button>
         </div>
       </div>
 
       <div class="card">
-        <h2>이렇게 복습해요</h2>
+        <h2>이렇게 공부해요</h2>
         <p class="small">독일의 심리학자 <b>에빙하우스</b>는 사람이 새로 배운 것을 하루만 지나도 절반 넘게 잊어버린다는
           <b>망각 곡선</b>을 발견했어요. 하지만 잊어버리기 전에 다시 떠올리면 기억이 점점 오래 남아요.</p>
         ${curveSvg()}
         <ol class="plain small">
-          <li><b>오늘의 한자</b> — 뜻과 음을 어휘 4개, 예문과 함께 익혀요.</li>
+          <li><b>오늘의 한자</b> — 음훈을 익히고, 활용 어휘 속 한자의 음훈을 힌트로 어휘의 <b>뜻을 연결</b>해요.</li>
+          <li><b>짧은 글짓기</b> — 배운 낱말을 넣어 한 문장을 지어요.</li>
+          <li><b>확인 퀴즈</b> — 어휘를 보고 음훈 쓰기, 활용 어휘가 아닌 것 고르기. 다 풀면 틀린 까닭을 풀이해 줘요.</li>
           <li><b>1일 후 복습</b> — 다음 학습일 아침에 바로 전 한자를 퀴즈로 떠올려요. (금요일 한자는 월요일에)</li>
           <li><b>일주일 복습</b> — 금요일마다 그 주의 한자 5자를 모두 다시 풀어요.</li>
-          <li><b>틀린 한자</b> — 퀴즈나 시험에서 틀리면 '다시 볼 한자'로 모아 매일 복습에 최대 ${MAX_EXTRA_REVIEW}자씩 다시 나와요.</li>
+          <li><b>틀린 한자</b> — 틀리면 '다시 볼 한자'로 모아 매일 복습에 최대 ${MAX_EXTRA_REVIEW}자씩 다시 나와요.</li>
           <li><b>급수 시험</b> — 한 급수를 다 배우면 전체 복습 후 시험(어휘 제시 → 뜻과 음 쓰기)을 봐요.</li>
         </ol>
       </div>
@@ -953,6 +1378,7 @@
           모두 <b>${HANJA.length}자</b>가 들어 있어요. 평일마다 한 자씩, 약 ${Math.round(HANJA.length / 5)}주 분량이에요.</p>
         <p class="small muted">준비 중: ${UPCOMING_GRADES.join(', ')}</p>
       </div>`;
+    document.getElementById('switch').addEventListener('click', () => { logout(); location.hash = '#/'; route(); });
     document.getElementById('grade').addEventListener('change', (e) => {
       const g = GRADES[+e.target.value];
       S.pointer = g.start;
@@ -961,7 +1387,7 @@
     });
     document.getElementById('unlock').addEventListener('change', (e) => { S.unlockAll = e.target.checked; save(); });
     document.getElementById('reset').addEventListener('click', () => {
-      if (confirm('정말 모든 학습 기록을 지울까요? 되돌릴 수 없어요.')) {
+      if (confirm(`정말 ${user}의 모든 학습 기록을 지울까요? 되돌릴 수 없어요.`)) {
         S = blankState();
         save();
         session = null;
@@ -977,14 +1403,14 @@
     const X = (d) => x0 + (d / 14) * w;
     const Y = (p) => y0 + (1 - p) * h;
     const decay = (t, s) => Math.exp(-t / s);
-    let noRev = '', rev = '';
+    let noRev = '';
     for (let d = 0; d <= 14; d += 0.25) noRev += `${d ? 'L' : 'M'}${X(d).toFixed(1)},${Y(0.25 + 0.75 * decay(d, 1.2)).toFixed(1)}`;
     const seg = (from, to, s) => {
       let p = '';
       for (let d = from; d <= to + 1e-9; d += 0.25) p += `${d === from ? 'M' : 'L'}${X(d).toFixed(1)},${Y(0.25 + 0.75 * decay(d - from, s)).toFixed(1)}`;
       return p;
     };
-    rev = seg(0, 1, 1.2) + seg(1, 4, 4) + seg(4, 14, 14);
+    const rev = seg(0, 1, 1.2) + seg(1, 4, 4) + seg(4, 14, 14);
     return `<svg class="curve" viewBox="0 0 ${W} ${H}" role="img" aria-label="망각 곡선: 복습하면 기억이 오래 남아요">
       <line x1="${x0}" y1="${y0}" x2="${x0}" y2="${y0 + h}" stroke="currentColor" stroke-opacity=".3"/>
       <line x1="${x0}" y1="${y0 + h}" x2="${x0 + w}" y2="${y0 + h}" stroke="currentColor" stroke-opacity=".3"/>
@@ -1004,16 +1430,22 @@
     const hash = location.hash.replace(/^#\/?/, '');
     const parts = hash.split('/').filter(Boolean);
     document.getElementById('today-label').textContent = koDate(today());
+    const who = document.getElementById('who');
+    who.textContent = user ? `👤 ${user}` : '';
+    who.hidden = !user;
     document.querySelectorAll('.modal-back').forEach((m) => m.remove());
     if (parts[0] !== 'lesson' && parts[0] !== 'weekly' && parts[0] !== 'review') stopTimer();
     if (!(parts[0] === 'exam' && parts[2] === 'test')) exam = null;
-    document.body.classList.remove('in-lesson');
+    document.body.classList.remove('in-lesson', 'logged-out');
+    window.scrollTo(0, 0);
 
+    if (!user) { stopTimer(); renderLogin(); return; }
     switch (parts[0]) {
       case 'lesson': startLesson('lesson'); break;
       case 'weekly': startLesson('weekly'); break;
       case 'review': startLesson('review'); break;
       case 'list': renderList(); break;
+      case 'records': renderRecords(); break;
       case 'exam':
         if (parts[1] && parts[2] === 'test') startExam(parts[1], parts[3] || '20');
         else if (parts[1]) renderExamGrade(parts[1]);
@@ -1022,9 +1454,9 @@
       case 'settings': renderSettings(); break;
       default: renderHome();
     }
-    window.scrollTo(0, 0);
   }
 
+  document.getElementById('who').addEventListener('click', () => { location.hash = '#/records'; });
   window.addEventListener('hashchange', route);
   route();
 })();
