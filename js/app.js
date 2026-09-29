@@ -216,13 +216,19 @@
 
 
   // 다음에 배울 한자: 이번 급수 레벨테스트에서 틀린 한자 가운데 아직 배우지 않은 것
+  // 다음에 배울 한자: 전날까지 틀려서 다시 배울 한자가 먼저, 그다음 아직 배우지 않은 한자
   function nextNewIdx() {
     if (S.phase !== 'study') return null;
+    const ds = fmt(today());
+    const redo = (S.redo || []).find((r) => r.date < ds);
+    if (redo) return redo.idx;
     const i = S.queue.find((x) => !S.learned[x]);
     return i === undefined ? null : i;
   }
+  const isRedo = (i) => (S.redo || []).some((r) => r.idx === i);
   const curGrade = () => GRADES[Math.min(S.gradeIdx, GRADES.length - 1)];
-  const queueLeft = () => S.queue.filter((x) => !S.learned[x]).length;
+  // 남은 한자 = 아직 안 배운 한자 + 틀려서 다시 배울 한자 (완전 학습이 되어야 급수 시험)
+  const queueLeft = () => S.queue.filter((x) => !S.learned[x]).length + (S.redo || []).length;
   // 틀린 한자를 모두 배우면 급수 시험 단계로 넘어갑니다.
   function syncPhase() {
     if (S.phase === 'study' && !queueLeft() && !(session && session.type !== 'review')) {
@@ -459,10 +465,11 @@
     const newIdx = nextNewIdx();
     const reviews = [];
     const prev = lastLearnedBefore(ds);
-    if (prev !== null) reviews.push(prev);
+    // 오늘 다시 배우는 한자는 복습 문제에서 빼요(1~6단계로 다시 배우니까요).
+    if (prev !== null && prev !== newIdx) reviews.push(prev);
     for (const m of S.missed) {
       if (reviews.length >= 1 + MAX_EXTRA_REVIEW) break;
-      if (!reviews.includes(m) && S.learned[m] && S.learned[m] < ds) reviews.push(m);
+      if (!reviews.includes(m) && m !== newIdx && S.learned[m] && S.learned[m] < ds) reviews.push(m);
     }
     let week = [];
     if (t.getDay() === 5) {
@@ -550,6 +557,10 @@
     if (!S.learned[i]) {
       S.learned[i] = ds;
       S.order.push(i);
+    } else if (S.learned[i] !== ds) {
+      // 다시 배우는 한자: 오늘 배운 한자로 기록해 내일 1일 후 복습에 나오게 해요.
+      S.learned[i] = ds;
+      S.order = S.order.filter((x) => x !== i).concat([i]);
     }
     if (session.type === 'extra') {
       const e = S.log[ds] || { done: true };
@@ -563,6 +574,11 @@
 
   function finishSession() {
     const quiz = { correct: session.correct, total: session.total };
+    if (['lesson', 'extra'].includes(session.type) && session.plan.newIdx !== null && session.plan.newIdx !== undefined) {
+      const i = session.plan.newIdx;
+      S.redo = (S.redo || []).filter((r) => r.idx !== i);
+      if (session.failed) S.redo.push({ idx: i, date: session.date });
+    }
     if (session.type === 'lesson') {
       const e = S.log[session.date] || Object.assign({}, session.plan);
       e.done = true;
@@ -587,6 +603,9 @@
   function score(ok, i) {
     session.total++;
     if (ok) { session.correct++; removeMissed(i); } else addMissed(i);
+    // 새로 배우는 한자의 확인하기·추론하기를 틀리면 그 한자는 다음 학습일에 다시 배워요.
+    const st = session.steps[session.i];
+    if (!ok && session.plan && i === session.plan.newIdx && (st.kind === 'check' || st.kind === 'infer')) session.failed = true;
     save();
   }
 
@@ -788,7 +807,8 @@
     const ds = fmt(t);
     const entry = S.log[ds];
     const left = queueLeft();
-    const head = `<div class="dayname">${g.name} · 공부할 한자 ${left}자 남음</div>`;
+    const redoN = (S.redo || []).length;
+    const head = `<div class="dayname">${g.name} · 공부할 한자 ${left}자 남음${redoN ? ` (다시 배울 한자 ${redoN}자 포함)` : ''}</div>`;
     if (!isWeekday(t)) {
       const wk = learnedInWeek(t);
       return `<div class="card hero">
@@ -806,7 +826,8 @@
         <div class="dayname">${DAY[t.getDay()]}요일 학습 완료! 🎉</div>
         ${todays.length ? `<div class="today-chars">${todays.map((i, k) => `<button class="tc" data-carousel="${k}"><span class="hanja">${C(i).h}</span><small>${hunum(C(i))}</small></button>`).join('')}</div>` : ''}
         <p class="muted">${t.getDay() === 5 ? '한 주 동안 수고했어요! 주말엔 푹 쉬어요.' : '잘했어요! 내일 아침에 복습으로 다시 만나요.'}</p>
-        ${left ? `<a class="btn ghost block" href="#/extra">➕ 한 자 더 배우기</a>` : ''}
+        ${nextNewIdx() !== null ? `<a class="btn ghost block" href="#/extra">➕ 한 자 더 배우기</a>` : ''}
+        ${(S.redo || []).length ? `<p class="small">🔁 다시 배울 한자: <span class="hanja">${S.redo.map((r) => C(r.idx).h).join(' ')}</span> (다음 학습일)</p>` : ''}
         <div class="btn-row">
           ${todays.length ? `<button class="btn soft" data-carousel="0">📖 다시 보기${todays.length > 1 ? ` (${todays.length}자)` : ''}</button>` : ''}
           <a class="btn soft" href="#/review">자유 복습</a>
@@ -825,8 +846,8 @@
     if (plan.week.length) rows.push(['⭐', '', `일주일 복습 · 이번 주 ${plan.week.length}자`, 'week']);
     return `<div class="card hero today-card">
       ${head}
-      <div class="big-hanja mystery">${started ? c.h : '?'}</div>
-      <p class="muted">${started ? '하던 학습을 이어서 해요.' : '오늘은 어떤 한자를 만날까요?'}</p>
+      <div class="big-hanja mystery">${started || isRedo(c.idx) ? c.h : '?'}</div>
+      <p class="muted">${isRedo(c.idx) ? `🔁 지난번에 틀린 문제가 있던 '${hunum(c)}'를 다시 배워요.` : started ? '하던 학습을 이어서 해요.' : '오늘은 어떤 한자를 만날까요?'}</p>
       <ol class="steps">${rows.map(([e, n, txt, cls]) => `<li class="${cls ? `st-${cls}` : ''}"><span class="num">${n || e}</span><span>${txt}</span></li>`).join('')}</ol>
       <a class="btn block big" href="#/lesson">${started ? '이어서 하기' : '오늘의 학습 시작!'} · 약 5분</a>
     </div>`;
@@ -1007,6 +1028,7 @@
   function renderLearn(step) {
     const c = C(step.idx);
     return `<div class="card lesson-card">${stageHtml('learn')}${charHeadHtml(c)}
+      ${isRedo(c.idx) ? '<p class="center redo-note">🔁 다시 배우는 한자예요. 이번에는 끝까지 모두 맞혀 봐요!</p>' : ''}
       <p class="center tip">💡 <b>뜻</b>과 <b>소리</b>를 소리 내어 읽어 보세요.</p>
       ${nextBtn('활용 어휘 만나러 가기 →')}</div>`;
   }
@@ -1389,13 +1411,21 @@
       action = `<div class="card notice" style="text-align:left;margin-top:16px">
         <h3>🎓 ${g.name}에서 공부할 한자를 모두 배웠어요!</h3>
         <p class="small muted">${g.name} ${g.end - g.start}자 전체로 급수 시험을 봐요. 100점이면 다음 급수로 올라가요.</p>
-        <a class="btn block" href="#/test">급수 시험 보러 가기</a></div>`;
+        <a class="btn block" href="#/test">🏆 급수 시험 도전</a></div>`;
     } else if (learnedNew && nextNewIdx() !== null) {
       action = `<button class="btn ghost block" id="more" style="margin-top:12px">➕ 한 자 더 배우기 (남은 한자 ${queueLeft()}자)</button>`;
     }
+    // 확인하기·추론하기에서 틀리면 다음 학습일에 다시 배워요 (완전 학습).
+    let redoNote = '';
+    if (learnedNew && session.failed) {
+      const rc = C(session.plan.newIdx);
+      redoNote = `<div class="redo-note">🔁 틀린 문제가 있어서 <span class="hanja">${rc.h}</span>(${hunum(rc)})는
+        <b>다음 학습일에 다시 배워요.</b><br><span class="small">모든 한자를 완전히 익혀야 급수 시험에 도전할 수 있어요.</span></div>`;
+    }
     const html = `<div class="card celebrate">
-      <div class="emoji">🏅</div>
+      <div class="emoji">${session.failed ? '💪' : '🏅'}</div>
       <h2>${title}</h2>
+      ${redoNote}
       <p>${session.total ? `문제 <b>${session.correct} / ${session.total}</b> 정답 · ` : ''}약 ${mins}분</p>
       ${writing}
       <p class="muted">${msg}</p>

@@ -606,3 +606,5 @@ ol.plain li { margin: 4px 0; }
 .car-dots { flex: 1; display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; }
 .car-dots .dot { font-family: var(--hanja); font-size: 18px; width: 40px; height: 40px; border-radius: 12px; border: 2px solid var(--line); background: var(--paper); cursor: pointer; }
 .car-dots .dot.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.redo-note { margin: 10px 0; padding: 10px 14px; border-radius: 16px; background: var(--s1-soft); color: var(--accent-dark); font-size: 16px; text-align: center; }
+.redo-note .hanja { font-size: 22px; }
