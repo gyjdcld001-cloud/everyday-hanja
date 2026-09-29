@@ -77,6 +77,7 @@
       exams: {},       // 급수 id -> { best, last, attempts, date }
       activity: [],    // 학습 활동 누적 기록
       writings: [],    // 짧은 글짓기 { date, idx, text }
+      pending: [],     // 선생님 확인을 기다리는 애매한 답 { kind, grade, idx, m, s, date }
     };
   }
   function users() {
@@ -637,6 +638,44 @@
     back.querySelector('.close-x').addEventListener('click', close);
     document.body.appendChild(back);
   }
+  // 여러 한자 카드를 옆으로 넘겨 보기 (← → 버튼, 밀어서 넘기기, 키보드 화살표)
+  function openCarousel(list, start = 0) {
+    let k = start;
+    const back = document.createElement('div');
+    back.className = 'modal-back';
+    const draw = () => {
+      back.innerHTML = `<div class="modal carousel" role="dialog" aria-modal="true">
+        <div class="car-head">
+          <span class="car-title">오늘 배운 한자 <b>${k + 1}</b> / ${list.length}</span>
+          <button class="close-x" aria-label="닫기">✕</button>
+        </div>
+        <div class="car-body">${charCardHtml(C(list[k]))}</div>
+        ${list.length > 1 ? `<div class="car-nav">
+          <button class="car-btn" data-d="-1" ${k === 0 ? 'disabled' : ''} aria-label="이전 한자">‹</button>
+          <div class="car-dots">${list.map((i, j) => `<button class="dot${j === k ? ' on' : ''}" data-j="${j}" aria-label="${C(i).h}">${C(i).h}</button>`).join('')}</div>
+          <button class="car-btn" data-d="1" ${k === list.length - 1 ? 'disabled' : ''} aria-label="다음 한자">›</button>
+        </div>` : ''}
+      </div>`;
+      back.querySelector('.close-x').addEventListener('click', close);
+      back.querySelectorAll('[data-d]').forEach((b) => b.addEventListener('click', () => go(k + +b.dataset.d)));
+      back.querySelectorAll('[data-j]').forEach((b) => b.addEventListener('click', () => go(+b.dataset.j)));
+    };
+    const go = (n) => { if (n >= 0 && n < list.length && n !== k) { k = n; draw(); } };
+    const onKey = (e) => { if (e.key === 'ArrowLeft') go(k - 1); if (e.key === 'ArrowRight') go(k + 1); if (e.key === 'Escape') close(); };
+    function close() { back.remove(); document.removeEventListener('keydown', onKey); }
+    let x0 = null;
+    back.addEventListener('touchstart', (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+    back.addEventListener('touchend', (e) => {
+      if (x0 === null) return;
+      const dx = e.changedTouches[0].clientX - x0;
+      if (Math.abs(dx) > 50) go(k + (dx < 0 ? 1 : -1));
+      x0 = null;
+    });
+    back.addEventListener('click', (e) => { if (e.target === back) close(); });
+    document.addEventListener('keydown', onKey);
+    draw();
+    document.body.appendChild(back);
+  }
   function breakdown(w) {
     return `${w.read} = ${wordParts(w).map((p) => `<span class="hj">${p.ch}</span>(${p.m} ${p.s})`).join(' + ')} → <b>${w.mean}</b>`;
   }
@@ -761,17 +800,15 @@
       </div>`;
     }
     if (entry && entry.done) {
-      const c = entry.newIdx !== null && entry.newIdx !== undefined ? C(entry.newIdx) : null;
-      const extra = (entry.extra || []).map((i) => C(i).h).join(' ');
+      const todays = todaysNew(t);
       return `<div class="card hero">
         ${head}
         <div class="dayname">${DAY[t.getDay()]}요일 학습 완료! 🎉</div>
-        ${c ? `<div class="big-hanja">${c.h}</div><div class="hunum-read">${hunum(c)}</div>` : ''}
-        ${extra ? `<p class="small">더 배운 한자: <span class="hanja">${extra}</span></p>` : ''}
+        ${todays.length ? `<div class="today-chars">${todays.map((i, k) => `<button class="tc" data-carousel="${k}"><span class="hanja">${C(i).h}</span><small>${hunum(C(i))}</small></button>`).join('')}</div>` : ''}
         <p class="muted">${t.getDay() === 5 ? '한 주 동안 수고했어요! 주말엔 푹 쉬어요.' : '잘했어요! 내일 아침에 복습으로 다시 만나요.'}</p>
         ${left ? `<a class="btn ghost block" href="#/extra">➕ 한 자 더 배우기</a>` : ''}
         <div class="btn-row">
-          ${c ? `<button class="btn soft" data-open="${c.idx}">다시 보기</button>` : ''}
+          ${todays.length ? `<button class="btn soft" data-carousel="0">📖 다시 보기${todays.length > 1 ? ` (${todays.length}자)` : ''}</button>` : ''}
           <a class="btn soft" href="#/review">자유 복습</a>
         </div>
       </div>`;
@@ -792,6 +829,24 @@
       <p class="muted">${started ? '하던 학습을 이어서 해요.' : '오늘은 어떤 한자를 만날까요?'}</p>
       <ol class="steps">${rows.map(([e, n, txt, cls]) => `<li class="${cls ? `st-${cls}` : ''}"><span class="num">${n || e}</span><span>${txt}</span></li>`).join('')}</ol>
       <a class="btn block big" href="#/lesson">${started ? '이어서 하기' : '오늘의 학습 시작!'} · 약 5분</a>
+    </div>`;
+  }
+
+  // 오늘 새로 배운 한자(오늘의 한자 + 한 자 더 배우기)
+  function todaysNew(t) {
+    const ds = fmt(t);
+    const e = S.log[ds];
+    if (!e) return [];
+    return [e.newIdx].concat(e.extra || [])
+      .filter((i, k, a) => i !== null && i !== undefined && S.learned[i] === ds && a.indexOf(i) === k);
+  }
+  function todayCharsCard(t) {
+    const todays = todaysNew(t);
+    if (!todays.length) return '';
+    return `<div class="card center">
+      <h3>오늘 배운 한자</h3>
+      <div class="today-chars">${todays.map((i, k) => `<button class="tc" data-carousel="${k}"><span class="hanja">${C(i).h}</span><small>${hunum(C(i))}</small></button>`).join('')}</div>
+      <button class="btn soft block" data-carousel="0">📖 다시 보기${todays.length > 1 ? ` (${todays.length}자)` : ''}</button>
     </div>`;
   }
 
@@ -817,6 +872,9 @@
     }
     main += journeyHtml();
     main += phaseCard(t);
+    // 학습 완료 카드가 없는 단계(급수 시험 볼 차례 등)에서도 오늘 배운 한자를 다시 볼 수 있게
+    const ent = S.log[fmt(t)];
+    if (!(S.phase === 'study' && isWeekday(t) && ent && ent.done)) main += todayCharsCard(t);
 
     const g = curGrade();
     const total = g.end - g.start;
@@ -848,6 +906,8 @@
       </div>`;
     $app.innerHTML = main;
     bindOpen();
+    const todays = todaysNew(t);
+    $app.querySelectorAll('[data-carousel]').forEach((b) => b.addEventListener('click', () => openCarousel(todays, +b.dataset.carousel)));
   }
 
   /* ================= 화면: 학습 세션 ================= */
@@ -931,7 +991,7 @@
       // 이미 '#/extra' 주소에 있으면 주소가 바뀌지 않아 화면이 넘어가지 않으므로 직접 시작합니다.
       done: () => {
         const more = document.getElementById('more');
-        if (more) more.addEventListener('click', () => { if (location.hash === '#/extra') route(); else location.hash = '#/extra'; });
+        if (more) more.addEventListener('click', () => goHash('#/extra'));
       },
     };
     if (B[step.kind]) B[step.kind](step);
@@ -1198,6 +1258,7 @@
       ${answered ? nextBtn('적용하기 →') : ''}
     </div>`;
   }
+  // 해설: 두 보기를 나란히 놓고, 오늘 한자의 음훈은 초록, 소리만 같은 다른 한자(또는 우리말)는 빨강으로 표시해요.
   function inferFeedback(step) {
     const c = C(step.idx);
     const ans = step.options.find((w) => w.read === step.answer);
@@ -1206,19 +1267,26 @@
     const own = wordParts(ans).find((p) => p.ch === c.h);
     const look = oth.native ? null : wordParts(oth).find((p) => sounds.has(p.s));
     const ok = step.chosen === step.answer;
-    const othBreak = oth.native ? `${oth.read} → <b>${oth.mean}</b>` : breakdown(oth);
-    const ansWhy = `'${ans.read}'의 '${own.s}'은(는) 오늘 배운 <span class="hj">${c.h}</span>(${own.m} ${own.s})예요. 음훈을 떠올리면 '${ans.read}'의 뜻을 짐작할 수 있어요.`;
-    const othWhy = oth.native
-      ? `'${oth.read}'의 '${oth.read[0]}'은(는) 한자가 아니라 우리말(고유어)이에요. 소리만 같아요.`
-      : look
-        ? `'${oth.read}'의 '${look.s}'은(는) <span class="hj">${look.ch}</span>(${look.m} ${look.s})예요. 소리는 같지만 '${hunum(c)}'와 뜻이 달라요.`
-        : `'${oth.read}'에는 '${hunum(c)}'가 쓰이지 않았어요.`;
-    const why = ok ? '' : `<div class="why"><b>틀린 까닭</b> 고른 '${oth.read}'은(는) ${oth.native ? '소리만 같은 우리말이에요' : look ? `소리만 같고 ${look.ch}(${look.m} ${look.s})가 쓰인 어휘예요` : '오늘의 한자가 쓰이지 않은 어휘예요'}. 뜻이 '${oth.mean}'이라서 '${own.m}'과(와) 관계가 없어요.</div>`;
-    return `<div class="feedback ${ok ? 'ok' : 'no'}">${ok ? '⭕ 정답이에요! 음훈으로 뜻을 잘 추론했어요.' : `❌ 정답은 '${ans.read}'예요.`}</div>
-      <div class="explain">${why}
-        <div class="solve"><b>정답 해설</b> ${breakdown(ans)}<br>${ansWhy}</div>
-        <div class="solve"><b>다른 보기</b> ${othBreak}<br>${othWhy}</div>
+    const card = (w, good) => {
+      const chars = w.native
+        ? `<div class="ic-native"><span class="tag-red">우리말(고유어)</span><small>한자가 아니에요</small></div>`
+        : `<div class="wchars">${wordParts(w).map((p) => {
+          const cls = good && p.ch === c.h ? ' good' : !good && look && p.ch === look.ch ? ' bad' : '';
+          return `<span class="wc${cls}"><b class="hanja">${p.ch}</b><small>${p.m} <strong>${p.s}</strong></small></span>`;
+        }).join('')}</div>`;
+      return `<div class="icard ${good ? 'ok' : 'no'}${w.read === step.chosen ? ' picked' : ''}">
+        <div class="ic-top">${good ? '⭕ 오늘의 한자' : '✕ 소리만 같아요'}${w.read === step.chosen ? '<span class="mine">내가 고름</span>' : ''}</div>
+        <div class="ic-word">${w.read}</div>
+        ${chars}
+        <div class="ic-mean">${w.mean}</div>
       </div>`;
+    };
+    const same = oth.native ? oth.read[0] : look ? look.s : own.s;
+    const right = oth.native ? '우리말' : look ? `${look.ch} ${look.m} ${look.s}` : '다른 한자';
+    return `<div class="feedback ${ok ? 'ok' : 'no'}">${ok ? '⭕ 정답이에요! 뜻을 잘 추론했어요.' : `❌ 정답은 '${ans.read}'예요.`}</div>
+      <div class="icards">${card(ans, true)}${card(oth, false)}</div>
+      <div class="ic-sum">같은 '<b>${same}</b>' 소리라도
+        <span class="g">${c.h} ${own.m} ${own.s}</span> ≠ <span class="r">${right}</span></div>`;
   }
   function bindInfer(step) {
     if (step.chosen !== null) { bindNext(); return; }
@@ -1385,6 +1453,7 @@
       if (a.type === 'weekly') return `🗓 일주일 복습 · 퀴즈 ${a.correct}/${a.total}`;
       if (a.type === 'review') return `🔁 자유 복습 · 퀴즈 ${a.correct}/${a.total}`;
       if (a.type === 'exam') return `🏆 ${a.grade} 급수 시험 ${a.score}점 ${a.passed ? '(통과)' : ''}`;
+      if (a.type === 'accept') return `👩‍🏫 선생님이 <span class="hanja">${C(a.idx).h}</span>의 답을 인정했어요`;
       if (a.type === 'level') return `🧪 ${a.grade} 레벨테스트 · 아는 한자 ${a.known}/${a.total}`;
       if (a.type === 'relearn') return `🔁 틀린 한자 다시 보기 ${(a.list || []).map((i) => C(i).h).join(' ')}`;
       if (a.type === 'writing') return `✏️ 글짓기: “${esc(a.text)}”`;
@@ -1505,6 +1574,9 @@
     });
   }
 
+  // 음은 맞고 뜻을 다르게 쓴 답: 선생님이 확인해야 인정할 수 있어요.
+  const isAmbiguous = (it) => !it.skip && !!it.m && !it.over && soundOk(C(it.idx), it.s) && !meaningOk(C(it.idx), it.m);
+  let resultTeacher = false;
   function renderTestResult() {
     const t = S.test;
     const g = GRADES.find((x) => x.id === t.grade);
@@ -1514,13 +1586,17 @@
     const wrong = t.items.filter((it) => !itemOk(it));
     const right = t.items.length - wrong.length;
     const scoreN = Math.round((right / t.items.length) * 100);
+    const accepted = t.items.filter((it) => it.over).length;
+    const amb = wrong.filter(isAmbiguous);
     const list = wrong.map((it) => {
       const c = C(it.idx);
-      const canOver = !it.skip && it.m && soundOk(c, it.s) && !meaningOk(c, it.m);
-      return `<li><button class="cell-in hanja miss" data-open="${c.idx}">${c.h}</button>
+      const k = t.items.indexOf(it);
+      return `<li${isAmbiguous(it) ? ' class="amb"' : ''}><button class="cell-in hanja miss" data-open="${c.idx}">${c.h}</button>
         <div class="wl-body"><b>${hunum(c)}</b>
           <div class="small muted">내 답: ${it.skip ? '몰라요' : `${esc(it.m)} ${esc(it.s)}`}</div>
-          ${canOver ? `<button class="linkbtn small" data-over="${t.items.indexOf(it)}">내가 쓴 뜻 "${esc(it.m)}"도 맞아요 (선생님과 확인 후 인정)</button>` : ''}
+          ${isAmbiguous(it) ? (resultTeacher
+            ? `<button class="btn soft small-btn" data-over="${k}">✔ 뜻 "${esc(it.m)}" 인정하기</button>`
+            : '<span class="pill">🤔 선생님 확인 필요</span>') : ''}
         </div></li>`;
     }).join('');
     const head = t.kind === 'level'
@@ -1531,36 +1607,62 @@
          <p>${t.items.length}문항 중 ${right}문항 정답</p>
          <div class="stamp ${scoreN === 100 ? 'pass' : 'fail'}">${scoreN === 100 ? '통과' : '다시 도전'}</div>
          <p class="small muted" style="margin-top:14px">${scoreN === 100 ? '완벽해요! 다음 급수 레벨테스트로 올라가요.' : `100점이어야 다음 급수로 올라가요. 틀린 ${wrong.length}자를 다시 익히고 급수 시험을 다시 봐요.`}</p>`;
+    let teacherBox = '';
+    if (amb.length && !resultTeacher) {
+      teacherBox = `<div class="card notice">
+        <h3>🤔 뜻을 다르게 쓴 답이 ${amb.length}개 있어요</h3>
+        <p class="small">음은 맞았지만 뜻을 다른 말로 쓴 답이에요. 선생님께 보여 드리고 확인을 받으면 맞은 답으로 인정돼요.
+          지금 확인하지 못하면 나중에 선생님이 선생님 메뉴에서 인정할 수 있어요.</p>
+        ${teacherSet() ? `<form id="tchk" class="row" autocomplete="off">
+            <input id="tpw" type="password" class="text-input" placeholder="선생님 비밀번호" style="flex:1;margin:0">
+            <button class="btn">👩‍🏫 선생님 확인</button></form><div id="tfb"></div>`
+          : '<p class="small muted">선생님 비밀번호가 아직 없어요. 선생님 메뉴에서 먼저 만들어 주세요.</p>'}
+      </div>`;
+    } else if (amb.length) {
+      teacherBox = '<div class="card notice"><h3>👩‍🏫 선생님 확인 중</h3><p class="small">맞다고 판단한 답의 \'인정하기\'를 눌러 주세요. 인정하지 않은 답은 틀린 답으로 남아요.</p></div>';
+    }
     $app.innerHTML = `
       <div class="card celebrate">
         <div class="stage-label">${g.name} ${testName(t)} 결과</div>
         ${head}
+        ${accepted ? `<p class="small">👩‍🏫 선생님이 인정한 답 ${accepted}개</p>` : ''}
         <button class="btn block big" id="confirm">확인</button>
       </div>
+      ${teacherBox}
       ${wrong.length ? `<div class="card"><h3>${t.kind === 'level' ? '공부할 한자' : '틀린 한자'} ${wrong.length}자</h3>
         <ul class="wrong-list">${list}</ul></div>` : ''}`;
     bindOpen();
+    const tchk = document.getElementById('tchk');
+    if (tchk) tchk.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (checkTeacher(document.getElementById('tpw').value)) { resultTeacher = true; renderTestResult(); }
+      else document.getElementById('tfb').innerHTML = '<div class="feedback no">선생님 비밀번호가 맞지 않아요.</div>';
+    });
     $app.querySelectorAll('[data-over]').forEach((b) => b.addEventListener('click', () => {
       t.items[+b.dataset.over].over = true;
       save();
       renderTestResult();
     }));
-    document.getElementById('confirm').addEventListener('click', () => { finalizeTest(); });
+    document.getElementById('confirm').addEventListener('click', () => { resultTeacher = false; finalizeTest(); });
   }
 
-  function passGrade(g) {
-    S.passed[g.id] = fmt(today());
-    S.gradeIdx = GRADES.indexOf(g) + 1;
-    S.queue = [];
-    S.relearn = [];
-    S.phase = S.gradeIdx >= GRADES.length ? 'done' : 'level';
+  function passGrade(g, st = S) {
+    st.passed[g.id] = fmt(today());
+    st.gradeIdx = GRADES.indexOf(g) + 1;
+    st.queue = [];
+    st.relearn = [];
+    st.phase = st.gradeIdx >= GRADES.length ? 'done' : 'level';
   }
+  const goHash = (h) => { if (location.hash === h) route(); else location.hash = h; };
   function finalizeTest() {
     const t = S.test;
     const g = GRADES.find((x) => x.id === t.grade);
     const ds = fmt(today());
     const wrong = t.items.filter((it) => !itemOk(it)).map((it) => it.idx);
     const right = t.items.length - wrong.length;
+    // 확인받지 못한 애매한 답은 선생님 메뉴에서 나중에 인정할 수 있게 모아 둡니다.
+    S.pending = (S.pending || []).filter((p) => !(p.kind === t.kind && p.grade === g.id))
+      .concat(t.items.filter(isAmbiguous).map((it) => ({ kind: t.kind, grade: g.id, idx: it.idx, m: it.m, s: it.s, date: ds })));
     let next;
     if (t.kind === 'level') {
       t.items.forEach((it) => { if (itemOk(it) && !S.learned[it.idx]) S.known[it.idx] = ds; });
@@ -1594,16 +1696,18 @@
     const ng = S.phase === 'done' ? null : curGrade();
     const body = next === 'pass'
       ? `<div class="emoji">🎉</div><h2>${g.name} 통과!</h2>
-         ${ng ? `<p>이제 <b>${ng.name}</b> 레벨테스트를 볼 차례예요.</p><a class="btn block big" href="#/level">${ng.name} 레벨테스트 시작</a>`
+         ${ng ? `<p>이제 <b>${ng.name}</b> 레벨테스트를 볼 차례예요.</p><button class="btn block big" data-go="#/level">${ng.name} 레벨테스트 시작</button>`
               : '<p>준비된 모든 급수를 통과했어요! 정말 대단해요.</p>'}
          <a class="btn soft block" href="#/" style="margin-top:10px">나중에 하기</a>`
       : next === 'study'
         ? `<div class="emoji">📚</div><h2>공부할 한자 ${wrong.length}자</h2>
            <p>평일 아침에 하루 한 자씩 배워요. 다 배우면 ${g.name} 급수 시험을 봐요.</p><a class="btn block big" href="#/">홈으로</a>`
         : `<div class="emoji">💪</div><h2>틀린 한자 ${wrong.length}자 다시 보기</h2>
-           <p>틀린 한자를 다시 익히고 ${g.name} 급수 시험을 다시 봐요.</p><a class="btn block big" href="#/relearn">다시 보기 시작</a>
+           <p>틀린 한자를 다시 익히고 ${g.name} 급수 시험을 다시 봐요.</p><button class="btn block big" data-go="#/relearn">다시 보기 시작</button>
            <a class="btn soft block" href="#/" style="margin-top:10px">나중에 하기</a>`;
     $app.innerHTML = `<div class="card celebrate">${body}</div>`;
+    // 이미 같은 주소(#/level)에 있어도 다음 레벨테스트가 시작되도록 직접 이동합니다.
+    $app.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => goHash(b.dataset.go)));
   }
 
   /* ================= 화면: 급수 시험 탭 ================= */
@@ -1756,6 +1860,28 @@
   }
 
   /* ================= 화면: 선생님 메뉴 ================= */
+  // 선생님이 나중에 애매한 답을 인정하면 학생의 진도에 반영합니다.
+  function acceptAnswer(st, q) {
+    const g = GRADES.find((x) => x.id === q.grade);
+    const cur = GRADES[Math.min(st.gradeIdx, GRADES.length - 1)];
+    const ds = fmt(today());
+    if (q.kind === 'level') {
+      if (!st.learned[q.idx]) st.known[q.idx] = ds;
+      st.queue = st.queue.filter((x) => x !== q.idx);
+      if (st.levels[g.id]) st.levels[g.id].known++;
+      // 공부할 한자가 하나도 남지 않으면(모두 아는 한자) 급수를 통과해요.
+      if (cur === g && st.phase === 'study' && !st.queue.length) passGrade(g, st);
+    } else if (cur === g && st.phase === 'relearn' && st.relearn.includes(q.idx)) {
+      st.relearn = st.relearn.filter((x) => x !== q.idx);
+      const total = g.end - g.start;
+      const scoreN = Math.round(((total - st.relearn.length) / total) * 100);
+      const rec = st.exams[g.id];
+      if (rec) { rec.last = scoreN; rec.best = Math.max(rec.best, scoreN); }
+      st.missed = st.missed.filter((x) => x !== q.idx);
+      if (!st.relearn.length) passGrade(g, st);
+    }
+    st.activity.push({ date: ds, type: 'accept', idx: q.idx, kind: q.kind });
+  }
   let teacherOk = false;
   let teacherOpen = null;
   const PHASE_NAME = { level: '레벨테스트', study: '공부 중', exam: '시험 볼 차례', relearn: '다시 보기', done: '모두 통과' };
@@ -1802,13 +1928,18 @@
       const left = st.phase === 'study' ? ` (${st.queue.filter((x) => !st.learned[x]).length}자 남음)` : '';
       const detail = teacherOpen === n ? `<tr class="detail"><td colspan="6">
           <b>통과한 급수</b> ${GRADES.filter((x) => st.passed[x.id]).map((x) => x.name).join(', ') || '없음'}<br>
+          <b>선생님 확인을 기다리는 답</b>${(st.pending || []).length ? `<ul class="plain-list pend">${st.pending.map((q, k) => {
+            const pc = C(q.idx);
+            return `<li><span class="hanja">${pc.h}</span> ${hunum(pc)} — 학생 답 “<b>${esc(q.m)} ${esc(q.s)}</b>” <span class="small muted">(${GRADES.find((x) => x.id === q.grade).name} ${q.kind === 'level' ? '레벨테스트' : '급수 시험'}, ${shortDate(q.date)})</span>
+              <span class="row" style="margin-top:4px"><button class="btn soft" data-acc="${k}" data-st="${esc(n)}">✔ 인정</button><button class="btn ghost" data-rej="${k}" data-st="${esc(n)}">인정 안 함</button></span></li>`;
+          }).join('')}</ul>` : ' 없음<br>'}
           <b>최근 글짓기</b><ul class="plain-list">${st.writings.slice(-5).reverse().map((w) => `<li>${shortDate(w.date)} “${esc(w.text)}”</li>`).join('') || '<li>없음</li>'}</ul>
           <div class="row" style="margin-top:8px">
             <button class="btn soft" data-reset="${esc(n)}">비밀번호 초기화</button>
             <button class="btn ghost" data-del="${esc(n)}">학생 삭제</button>
           </div></td></tr>` : '';
       return `<tr><td><button class="linkbtn" data-open-st="${esc(n)}">${esc(n)}</button></td>
-        <td>${st.phase === 'done' ? '완료' : g.name}<div class="small muted">${PHASE_NAME[st.phase] || ''}${left}</div></td>
+        <td>${st.phase === 'done' ? '완료' : g.name}<div class="small muted">${PHASE_NAME[st.phase] || ''}${left}</div>${(st.pending || []).length ? `<div class="pill">🤔 확인 ${st.pending.length}</div>` : ''}</td>
         <td>${Object.keys(st.known).length}</td><td>${st.order.length}</td>
         <td>${ex ? `${ex.last}점<div class="small muted">${ex.attempts}번</div>` : '-'}</td>
         <td>${last ? shortDate(last) : '-'}</td></tr>${detail}`;
@@ -1831,6 +1962,16 @@
       </div>`;
     $app.querySelectorAll('[data-open-st]').forEach((b) => b.addEventListener('click', () => {
       teacherOpen = teacherOpen === b.dataset.openSt ? null : b.dataset.openSt;
+      renderTeacher();
+    }));
+    $app.querySelectorAll('[data-acc], [data-rej]').forEach((b) => b.addEventListener('click', () => {
+      const n = b.dataset.st;
+      const st = n === user ? S : loadState(n);
+      const k = +(b.dataset.acc ?? b.dataset.rej);
+      const q = st.pending[k];
+      st.pending.splice(k, 1);
+      if (b.dataset.acc !== undefined) acceptAnswer(st, q);
+      lsSet(stateKey(n), JSON.stringify(st));
       renderTeacher();
     }));
     $app.querySelectorAll('[data-reset]').forEach((b) => b.addEventListener('click', () => {
